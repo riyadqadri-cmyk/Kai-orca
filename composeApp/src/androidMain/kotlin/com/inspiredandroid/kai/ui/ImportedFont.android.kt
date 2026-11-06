@@ -9,9 +9,33 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.AndroidFont
+import androidx.compose.ui.text.font.FontLoadingStrategy
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontVariation
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.font.FontFamily
 import java.io.File
+
+// A font stored in app-private storage cannot use Compose's resource-ID Font constructor.
+// AndroidFont bridges a file-backed Android Typeface to Compose text rendering.
+private class ImportedFileFont(val file: File) : AndroidFont(
+    FontLoadingStrategy.Blocking,
+    FileTypefaceLoader,
+    FontVariation.Settings(),
+) {
+    override val weight: FontWeight = FontWeight.Normal
+    override val style: FontStyle = FontStyle.Normal
+}
+
+private object FileTypefaceLoader : AndroidFont.TypefaceLoader {
+    override fun loadBlocking(context: android.content.Context, font: AndroidFont): Typeface? =
+        (font as? ImportedFileFont)?.let { Typeface.createFromFile(it.file) }
+
+    override suspend fun awaitLoad(context: android.content.Context, font: AndroidFont): Typeface? =
+        loadBlocking(context, font)
+}
+
 
 private const val FONT_FILE = "orca_imported_font.ttf"
 private fun fontFile(context: android.content.Context) = File(context.filesDir, FONT_FILE)
@@ -46,7 +70,7 @@ actual fun importedFontFamily(): FontFamily? {
     val context = LocalContext.current
     return remember(context) {
         fontFile(context).takeIf { it.isFile }?.let { file ->
-            runCatching { FontFamily(Font(Typeface.createFromFile(file))) }.getOrNull()
+            runCatching { FontFamily(ImportedFileFont(file)) }.getOrNull()
         }
     }
 }
