@@ -15,6 +15,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import com.inspiredandroid.kai.data.AppSettings
+import org.koin.compose.koinInject
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
@@ -54,6 +62,8 @@ internal fun TopBar(
     onShowHistory: () -> Unit,
     navigationTabBar: (@Composable () -> Unit)? = null,
 ) {
+    val appSettings = koinInject<AppSettings>()
+    val deepSeekThinking by appSettings.deepSeekThinkingFlow.collectAsState()
     if (navigationTabBar != null) {
         Box(
             modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 64.dp),
@@ -77,6 +87,12 @@ internal fun TopBar(
             if (textToSpeech != null) {
                 SpeechToggleButton(textToSpeech, isSpeechOutputEnabled, isSpeaking, actions)
             }
+            Text("Thinking", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.labelSmall)
+            Switch(
+                checked = deepSeekThinking,
+                onCheckedChange = appSettings::setDeepSeekThinkingEnabled,
+                modifier = Modifier.padding(horizontal = 6.dp).width(48.dp),
+            )
             IconButton(
                 modifier = Modifier.handCursor(),
                 onClick = onNavigateToSettings,

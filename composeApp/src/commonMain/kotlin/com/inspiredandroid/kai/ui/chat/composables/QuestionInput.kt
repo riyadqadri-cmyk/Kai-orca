@@ -103,26 +103,7 @@ fun QuestionInput(
     installedSkills: ImmutableList<SkillManifest> = persistentListOf(),
     modifier: Modifier = Modifier,
 ) {
-    // Persisted DeepSeek preference: false by default. Switching it changes the
-    // model used on the next request, not just the visibility of reasoning text.
-    val appSettings = koinInject<AppSettings>()
-    val deepSeekThinking by appSettings.deepSeekThinkingFlow.collectAsState()
     Column(modifier = modifier) {
-        if (availableServices.any { it.serviceId == "deepseek" || it.modelId in listOf("deepseek-chat", "deepseek-reasoner") }) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.End,
-            ) {
-                Text("Thinking", style = MaterialTheme.typography.labelMedium)
-                Spacer(Modifier.width(8.dp))
-                Switch(
-                    checked = deepSeekThinking,
-                    onCheckedChange = appSettings::setDeepSeekThinkingEnabled,
-                    modifier = Modifier.size(width = 48.dp, height = 32.dp),
-                )
-            }
-        }
         // Slash autocomplete: shown when the user is typing the first token and it starts
         // with `/`. Selecting an entry rewrites the first token to the canonical skill id
         // so the ViewModel can match it at send time.

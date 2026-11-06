@@ -25,7 +25,7 @@ object ThemeEditorConfig {
             val scale = raw.toFloatOrNull() ?: error("fontScale must be a number")
             require(scale in 0.7f..2.0f) { "fontScale must be between 0.7 and 2.0" }
         }
-        for (key in listOf("primary", "background", "surface", "onSurface")) {
+        for (key in listOf("primary", "background", "surface", "onSurface", "onBackground", "onSurfaceVariant")) {
             obj[key]?.jsonPrimitive?.content?.let { parseColor(it) }
         }
     }
@@ -42,6 +42,8 @@ object ThemeEditorConfig {
         background = obj["background"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.background,
         surface = obj["surface"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.surface,
         onSurface = obj["onSurface"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.onSurface,
+        onBackground = obj["onBackground"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.onBackground,
+        onSurfaceVariant = obj["onSurfaceVariant"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.onSurfaceVariant,
     )
 
     fun applyTypography(base: Typography, obj: JsonObject, importedFont: FontFamily? = null): Typography {

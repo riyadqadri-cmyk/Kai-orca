@@ -35,7 +35,7 @@ fun AppearanceEditor(settings: AppSettings = koinInject()) {
     val error = remember(draft) { runCatching { ThemeEditorConfig.parse(draft) }.exceptionOrNull()?.message }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Theme file", style = MaterialTheme.typography.titleLarge)
-        Text("Edit JSON to customize typography and colors. Changes apply when you press Apply. Unknown keys are preserved but do not affect the UI until supported.")
+        Text("Edit JSON to customize typography and colors. For text, use onSurface, onBackground, or onSurfaceVariant (hex colors such as #FFFFFF). Changes apply when you press Apply.")
         OutlinedTextField(
             value = draft,
             onValueChange = { draft = it },
