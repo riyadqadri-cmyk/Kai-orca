@@ -1,0 +1,35 @@
+name: Build Orca Android APK
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v4
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          test -n "$KEYSTORE_B64" || { echo 'Missing KEYSTORE_B64 secret'; exit 1; }
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/orca.keystore"
+      - name: Build signed APK
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/orca.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          test -n "$KEYSTORE_PASSWORD" && test -n "$KEY_ALIAS" || { echo 'Missing signing secrets'; exit 1; }
+          chmod +x gradlew
+          ./gradlew :androidApp:assembleFossRelease --stacktrace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Orca-signed-APK
+          path: androidApp/build/outputs/apk/foss/release/*.apk
+          if-no-files-found: error
