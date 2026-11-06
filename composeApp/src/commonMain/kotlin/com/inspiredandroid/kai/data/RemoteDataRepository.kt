@@ -1070,8 +1070,8 @@ class RemoteDataRepository(
         // assembly, tool-call pairing, context trimming — is shared.
         val useResponsesApi = requiresResponsesApi(service, credentials.modelId, credentials.baseUrl)
         val strategy = object : ToolLoopStrategy {
-            override suspend fun chat(history: List<History>, systemPrompt: String?): LoopChatResult {
-                val msgs = trimMessagesForContext(buildOpenAIMessages(service, history, systemPrompt, credentials.modelId, declaredToolNames), contextWindowTokens)
+            override suspend fun chat(loopHistory: List<History>, systemPrompt: String?): LoopChatResult {
+                val msgs = trimMessagesForContext(buildOpenAIMessages(service, loopHistory, systemPrompt, credentials.modelId, declaredToolNames), contextWindowTokens)
                 if (useResponsesApi) {
                     val response = retryApiCall {
                         requests.openAIResponses(service, credentials, toResponsesInput(msgs), tools).getOrThrow()
