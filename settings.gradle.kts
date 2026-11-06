@@ -1,4 +1,4 @@
-rootProject.name = "Orca"
+rootProject.name = "Kai"
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 pluginManagement {
@@ -30,3 +30,4 @@ dependencyResolutionManagement {
 
 include(":composeApp")
 include(":androidApp")
+include(":screenshotTests")
