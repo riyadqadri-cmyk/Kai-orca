@@ -35,7 +35,7 @@ fun AppearanceEditor(settings: AppSettings = koinInject()) {
     val error = remember(draft) { runCatching { ThemeEditorConfig.parse(draft) }.exceptionOrNull()?.message }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Theme file", style = MaterialTheme.typography.titleLarge)
-        Text("Edit JSON to customize typography and colors. For text, use onSurface, onBackground, or onSurfaceVariant (hex colors such as #FFFFFF). Changes apply when you press Apply.")
+        Text("Edit JSON to customize typography and colors (including onSurface, onBackground, and onSurfaceVariant). Changes apply when you press Apply.")
         OutlinedTextField(
             value = draft,
             onValueChange = { draft = it },
@@ -64,6 +64,6 @@ fun AppearanceEditor(settings: AppSettings = koinInject()) {
             Text("Thinking mode (new requests)", modifier = Modifier.weight(1f))
             Switch(checked = thinking, onCheckedChange = settings::setDeepSeekThinkingEnabled)
         }
-        Text("When enabled, DeepSeek uses deepseek-reasoner; when disabled, deepseek-chat. Applies to DeepSeek requests only.")
+        Text("Controls DeepSeek API thinking mode without changing the selected model. Applies to new DeepSeek requests only.")
     }
 }

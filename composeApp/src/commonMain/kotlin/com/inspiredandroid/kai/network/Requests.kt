@@ -263,6 +263,7 @@ class Requests {
         customHeaders: Map<String, String> = emptyMap(),
         sessionId: String? = null,
         requestTimeoutMs: Long? = null,
+        deepSeekThinkingEnabled: Boolean = false,
     ): Result<OpenAICompatibleChatResponseDto> = try {
         val apiKey = getApiKeyOrThrow(service, credentials)
         val model = credentials.modelId.ifEmpty { null }
@@ -279,6 +280,9 @@ class Requests {
                         messages = messages,
                         model = model,
                         tools = tools.toRequestTools { it.toRequestTool() },
+                        thinking = if (service == Service.DeepSeek) OpenAICompatibleChatRequestDto.Thinking(
+                            if (deepSeekThinkingEnabled) "enabled" else "disabled"
+                        ) else null,
                     ),
                 )
             }
@@ -306,6 +310,7 @@ class Requests {
         tools: List<Tool> = emptyList(),
         sessionId: String? = null,
         onUpdate: (String, String) -> Unit = { _, _ -> },
+        thinkingEnabled: Boolean = false,
     ): Result<OpenAICompatibleChatResponseDto> = try {
         val service = Service.DeepSeek
         val apiKey = getApiKeyOrThrow(service, credentials)
@@ -325,6 +330,7 @@ class Requests {
                 model = credentials.modelId.ifEmpty { null },
                 tools = tools.toRequestTools { it.toRequestTool() },
                 stream = true,
+                thinking = OpenAICompatibleChatRequestDto.Thinking(if (thinkingEnabled) "enabled" else "disabled"),
             ))
         }.execute { response ->
             if (!response.status.isSuccess()) {

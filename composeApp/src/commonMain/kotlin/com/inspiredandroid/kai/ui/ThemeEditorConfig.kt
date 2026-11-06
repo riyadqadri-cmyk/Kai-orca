@@ -25,7 +25,7 @@ object ThemeEditorConfig {
             val scale = raw.toFloatOrNull() ?: error("fontScale must be a number")
             require(scale in 0.7f..2.0f) { "fontScale must be between 0.7 and 2.0" }
         }
-        for (key in listOf("primary", "background", "surface", "onSurface", "onBackground", "onSurfaceVariant")) {
+        for (key in listOf("primary", "onPrimary", "background", "onBackground", "surface", "onSurface", "surfaceVariant", "onSurfaceVariant", "secondary", "onSecondary", "outline")) {
             obj[key]?.jsonPrimitive?.content?.let { parseColor(it) }
         }
     }
@@ -43,7 +43,12 @@ object ThemeEditorConfig {
         surface = obj["surface"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.surface,
         onSurface = obj["onSurface"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.onSurface,
         onBackground = obj["onBackground"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.onBackground,
+        onPrimary = obj["onPrimary"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.onPrimary,
+        onSecondary = obj["onSecondary"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.onSecondary,
+        secondary = obj["secondary"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.secondary,
+        surfaceVariant = obj["surfaceVariant"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.surfaceVariant,
         onSurfaceVariant = obj["onSurfaceVariant"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.onSurfaceVariant,
+        outline = obj["outline"]?.jsonPrimitive?.content?.let(::parseColor) ?: base.outline,
     )
 
     fun applyTypography(base: Typography, obj: JsonObject, importedFont: FontFamily? = null): Typography {

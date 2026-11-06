@@ -799,7 +799,7 @@ class RemoteDataRepository(
                     if (service == Service.DeepSeek && liveHistory != null) {
                         streamDeepSeekVisible(credentials, openAIMessages, emptyList(), liveHistory, sessionId)
                     } else {
-                        requests.openAICompatibleChat(service, if (service == Service.DeepSeek) deepSeekModeCredentials(credentials) else credentials, openAIMessages, sessionId = sessionId, requestTimeoutMs = requestTimeoutMs).getOrThrow()
+                        requests.openAICompatibleChat(service, credentials, openAIMessages, sessionId = sessionId, requestTimeoutMs = requestTimeoutMs, deepSeekThinkingEnabled = appSettings.isDeepSeekThinkingEnabled()).getOrThrow()
                     }
                 }
                 val message = response.choices.firstOrNull()?.message
@@ -1020,12 +1020,6 @@ class RemoteDataRepository(
         }
     }
 
-    /** Apply the user's DeepSeek thinking preference to the two standard DeepSeek models. */
-    private fun deepSeekModeCredentials(credentials: ServiceCredentials): ServiceCredentials =
-        if (credentials.modelId in listOf("deepseek-chat", "deepseek-reasoner")) {
-            credentials.copy(modelId = if (appSettings.isDeepSeekThinkingEnabled()) "deepseek-reasoner" else "deepseek-chat")
-        } else credentials
-
     /** A temporary assistant message for live DeepSeek tokens. Never persisted or sent upstream. */
     private suspend fun streamDeepSeekVisible(
         credentials: ServiceCredentials,
@@ -1036,7 +1030,7 @@ class RemoteDataRepository(
     ): com.inspiredandroid.kai.network.dtos.openaicompatible.OpenAICompatibleChatResponseDto {
         val previewId = Uuid.random().toString()
         try {
-            return requests.deepSeekChatStream(deepSeekModeCredentials(credentials), messages, tools, sessionId) { content, reasoning ->
+            return requests.deepSeekChatStream(credentials, messages, tools, sessionId, onUpdate = { content, reasoning ->
                 // The existing UI renders History StateFlow; keep this as a transient entry.
                 // Reasoning-only chunks remain visible until answer text begins.
                 val preview = History(
@@ -1049,7 +1043,7 @@ class RemoteDataRepository(
                 history.update { entries ->
                     entries.filterNot { it.id == previewId } + preview
                 }
-            }.getOrThrow()
+            }, thinkingEnabled = appSettings.isDeepSeekThinkingEnabled()).getOrThrow()
         } finally {
             history.update { entries -> entries.filterNot { it.id == previewId } }
         }
