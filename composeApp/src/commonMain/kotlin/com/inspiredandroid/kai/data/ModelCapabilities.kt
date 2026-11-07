@@ -77,20 +77,31 @@ internal val TEXT_ONLY_IMAGE_MODELS: Set<String> = setOf(
 )
 
 /**
- * True if the model accepts image input. Defaults to `true` for unknown models — most modern
- * flagship models are multimodal, and stripping images from a model that supports them is a
- * worse failure than leaving the rare unknown text-only model to reject them.
+ * DeepSeek model ids (normalized: any `provider/` prefix stripped, lower-cased) that accept
+ * image input. DeepSeek opened multimodal input on 2026-08-21 with V4-Flash-Vision-Exp and made
+ * it native in V4.1-Flash (`deepseek-flash`); the retired vision ids still alias to V4.1-Flash.
  *
- * DeepSeek is matched by family prefix: its chat API has no vision models at all, so this also
- * covers DeepSeek reached through an aggregator and any future DeepSeek id. GLM is matched
- * exactly via [TEXT_ONLY_IMAGE_MODELS] because its vision variants share a prefix with the text ones.
+ * This is an ALLOWLIST, not a family rule, on purpose: DeepSeek still serves text-only models
+ * (notably `deepseek-v4-pro-0813`, and every pre-V4 generation), and sending an image part to one
+ * of those is a hard 400 that stays in history and poisons every later turn in the chat.
+ * Anything not listed here — including future ids — is treated as text-only until verified.
  */
+internal val DEEPSEEK_VISION_MODELS: Set<String> = setOf(
+    "deepseek-flash",
+    "deepseek-v4.1-flash",
+    "deepseek-v4-flash-vision-exp",
+    "deepseek-v4-flash",
+    "deepseek-vl",
+    "deepseek-vl2",
+    "deepseek-vl2-tiny",
+    "deepseek-vl2-small",
+)
+
 internal fun modelSupportsImages(modelId: String): Boolean {
     val key = modelId.substringAfterLast('/').lowercase()
-    // DeepSeek's chat models are all text-only; the lone vision family is DeepSeek-VL, which
-    // carries "vl" in the id. Match the text family by prefix so this also covers DeepSeek via
-    // aggregators and future ids, while leaving DeepSeek-VL recognised as multimodal.
-    if (key.startsWith("deepseek") && !key.contains("vl")) return false
+    // DeepSeek is gated by allowlist: most of its catalog is still text-only, so a blanket
+    // "assume multimodal" default would break those models with a permanent 400.
+    if (key.startsWith("deepseek")) return key in DEEPSEEK_VISION_MODELS
     return key !in TEXT_ONLY_IMAGE_MODELS
 }
 

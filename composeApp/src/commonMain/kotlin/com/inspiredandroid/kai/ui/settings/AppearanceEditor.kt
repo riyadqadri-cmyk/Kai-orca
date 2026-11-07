@@ -4,7 +4,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -18,12 +17,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.inspiredandroid.kai.data.AppSettings
 import com.inspiredandroid.kai.ui.ImportedFontPicker
-import com.inspiredandroid.kai.ui.resetImportedFont
 import com.inspiredandroid.kai.ui.ThemeEditorConfig
+import com.inspiredandroid.kai.ui.resetImportedFont
 import org.koin.compose.koinInject
 
 @Composable
@@ -34,36 +34,46 @@ fun AppearanceEditor(settings: AppSettings = koinInject()) {
     var draft by remember(stored) { mutableStateOf(stored.ifBlank { ThemeEditorConfig.DEFAULT }) }
     val error = remember(draft) { runCatching { ThemeEditorConfig.parse(draft) }.exceptionOrNull()?.message }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Theme file", style = MaterialTheme.typography.titleLarge)
-        Text("Edit JSON to customize typography and colors (including onSurface, onBackground, and onSurfaceVariant). Changes apply when you press Apply.")
+        // Only the editor and its action live here. Every string that is shown carries an
+        // explicit theme color so nothing inherits a hardcoded black on dark surfaces.
         OutlinedTextField(
             value = draft,
             onValueChange = { draft = it },
-            label = { Text("Theme JSON") },
             modifier = Modifier.fillMaxWidth(),
+            textStyle = MaterialTheme.typography.bodyMedium.copy(
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
+            ),
             minLines = 12,
-            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace),
         )
-        if (error != null) Text(error, color = MaterialTheme.colorScheme.error)
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(onClick = { settings.setThemeJson(draft) }, enabled = error == null) { Text("Apply") }
-            OutlinedButton(onClick = { draft = ThemeEditorConfig.DEFAULT; settings.setThemeJson("") }) { Text("Reset") }
+        if (error != null) {
+            Text(text = error, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
-        Text("Custom Android font", style = MaterialTheme.typography.titleLarge)
-        Text("Import a TTF or OTF file from your phone. The selected font is copied into private app storage and applied throughout the app.")
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = { settings.setThemeJson(draft) }, enabled = error == null) {
+                Text(text = "Apply", color = MaterialTheme.colorScheme.onPrimary)
+            }
+            OutlinedButton(onClick = { draft = ThemeEditorConfig.DEFAULT; settings.setThemeJson("") }) {
+                Text(text = "Reset", color = MaterialTheme.colorScheme.onSurface)
+            }
             ImportedFontPicker(
                 onImported = { fontStatus = it; settings.notifyImportedFontChanged() },
                 onError = { fontStatus = it },
             )
+        }
+        if (fontStatus.isNotBlank()) {
+            Text(text = fontStatus, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             resetImportedFont { fontStatus = "Font removed"; settings.notifyImportedFontChanged() }
         }
-        if (fontStatus.isNotBlank()) Text(fontStatus)
-        Text("DeepSeek", style = MaterialTheme.typography.titleLarge)
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            Text("Thinking mode (new requests)", modifier = Modifier.weight(1f))
+            Text(
+                text = "DeepSeek thinking mode",
+                modifier = Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
             Switch(checked = thinking, onCheckedChange = settings::setDeepSeekThinkingEnabled)
         }
-        Text("Controls DeepSeek API thinking mode without changing the selected model. Applies to new DeepSeek requests only.")
     }
 }

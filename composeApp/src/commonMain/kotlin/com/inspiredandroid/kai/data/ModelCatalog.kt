@@ -247,6 +247,10 @@ internal object ModelCatalog {
         "deepseek-r1-distill-qwen-1.5b" to CuratedModelInfo("DeepSeek R1 Distill Qwen", 128_000, "2025-01", "1.5B"),
         "deepseek-coder-v2" to CuratedModelInfo("DeepSeek Coder V2", 128_000, "2024-06", "236B"),
         "deepseek-coder" to CuratedModelInfo("DeepSeek Coder", 128_000, "2024-06"),
+        // Vision-capable (multimodal input from 2026-08-21; native in V4.1-Flash).
+        // Only ids not already curated in the aggregator blocks below are declared here.
+        "deepseek-flash" to CuratedModelInfo("DeepSeek V4.1 Flash", 1_000_000, "2026-09"),
+        "deepseek-v4-flash-vision-exp" to CuratedModelInfo("DeepSeek V4 Flash Vision", 1_000_000, "2026-08"),
 
         // ==============================================================
         // Mistral
