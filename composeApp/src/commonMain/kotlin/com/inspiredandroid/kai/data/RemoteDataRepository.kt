@@ -5,6 +5,9 @@ package com.inspiredandroid.kai.data
 import com.inspiredandroid.kai.SandboxController
 import com.inspiredandroid.kai.compressImageBytes
 import com.inspiredandroid.kai.currentPlatform
+import com.inspiredandroid.kai.pruneAttachedImages
+import com.inspiredandroid.kai.readAttachedImage
+import com.inspiredandroid.kai.writeAttachedImage
 import com.inspiredandroid.kai.data.providers.buildAnthropicMessages
 import com.inspiredandroid.kai.data.providers.buildOpenAIMessages
 import com.inspiredandroid.kai.data.providers.toResponsesInput
@@ -195,6 +198,11 @@ class RemoteDataRepository(
     private val skillManager: SkillManager,
     private val sandboxController: SandboxController,
     private val localInferenceEngine: LocalInferenceEngine? = null,
+    /**
+     * Side channel for the view_image tool. Must be the same instance the tool was constructed
+     * with (both resolve the Koin singleton), or drained images never arrive.
+     */
+    private val pendingImageBuffer: PendingImageBuffer,
 ) : DataRepository {
 
     private val prettyJson = Json { prettyPrint = true }
@@ -863,6 +871,37 @@ class RemoteDataRepository(
         }
     }
 
+    /**
+     * Replaces this turn's inline image attachments with `[[image:<id>]]` markers.
+     *
+     * Images are persisted to disk so they can be re-read by the view_image tool. Keeping the
+     * base64 in history would re-send up to 384 input tokens per image on every later turn and
+     * on every tool round within a turn, so the marker replaces it as soon as the turn is done.
+     *
+     * Only the message that carried [imageIds] is rewritten, matched by index from the tail so a
+     * concurrent history edit cannot strip the wrong row.
+     */
+    private fun stripAttachedImagesFromLastUserMessage(imageIds: List<String>) {
+        if (imageIds.isEmpty()) return
+        chatHistory.update { history ->
+            val index = history.indexOfLast { it.role == History.Role.USER }
+            if (index < 0) return@update history
+            val target = history[index]
+            if (target.attachments.none { it.mimeType.startsWith("image/") }) return@update history
+            val plainText = ImageMarker.strip(target.content)
+            history.toMutableList().apply {
+                this[index] = target.copy(
+                    content = (listOf(plainText) + imageIds.map { ImageMarker.marker(it) })
+                        .filter { it.isNotEmpty() }
+                        .joinToString("\n"),
+                    attachments = target.attachments
+                        .filterNot { it.mimeType.startsWith("image/") }
+                        .toImmutableList(),
+                )
+            }
+        }
+    }
+
     private var pendingActiveSkillId: String? = null
 
     /** Built-in skill id; matches the bundled SKILL.md under composeResources. */
@@ -881,6 +920,9 @@ class RemoteDataRepository(
         }
         // Process every attached file: classify, compress/encode, and build an Attachment.
         // readBytes() is suspend, so this happens before the StateFlow.update block.
+        // Images are also persisted to disk and recorded here; the base64 stays inline for this
+        // turn only and is swapped for markers once the turn finishes.
+        val imageIds = mutableListOf<String>()
         val attachments = files.map { file ->
             val fileMimeType = file.mimeType()?.toString()
             val fileName = file.name
@@ -906,11 +948,21 @@ class RemoteDataRepository(
                     // compressImageBytes can fall back to the original bytes on failure or on
                     // platforms without compression — guard against Base64 OOM for oversized input.
                     if (compressed.size > MAX_IMAGE_BYTES) throw FileTooLargeException()
-                    Attachment(
+                    // Persist the bytes under a generated id. The attachment stays inline for THIS
+                    // turn so the model sees the image immediately; stripAttachedImages() replaces
+                    // it with a marker once the turn completes, so later turns don't re-send (and
+                    // re-bill) it. The model can pull it back on demand via the view_image tool.
+                    val compressedAttachment = Attachment(
                         data = Base64.encode(compressed),
                         mimeType = "image/jpeg",
                         fileName = null,
                     )
+                    val imageId = "img_" + Uuid.random().toString().replace("-", "").take(16)
+                    if (writeAttachedImage(imageId, compressed)) {
+                        imageIds.add(imageId)
+                    }
+                    // On write failure the image simply stays inline forever — correct, if wasteful.
+                    compressedAttachment
                 }
 
                 FileCategory.TEXT -> Attachment(
@@ -1017,6 +1069,10 @@ class RemoteDataRepository(
             }
         } finally {
             _fallbackStatus.value = null
+            // The turn is over: swap inline image bytes for markers so they are not re-sent on
+            // later turns. Runs on success, failure and fallback exhaustion alike — the image was
+            // already in the history for whatever request actually executed.
+            stripAttachedImagesFromLastUserMessage(imageIds)
         }
     }
 
@@ -1276,6 +1332,20 @@ class RemoteDataRepository(
                             ),
                         )
                     }
+                }
+            }
+
+            // view_image cannot return pixels through a tool result (it is text/JSON only), so
+            // the tool parks them in the shared buffer. Deliver them now, before the next round,
+            // as a USER message — DeepSeek rejects an image in any other role.
+            val drainedImages = pendingImageBuffer.drain()
+            if (drainedImages.isNotEmpty()) {
+                history.update { h ->
+                    h + History(
+                        role = History.Role.USER,
+                        content = "Images loaded via view_image:",
+                        attachments = drainedImages.toImmutableList(),
+                    )
                 }
             }
         }
@@ -1613,6 +1683,12 @@ class RemoteDataRepository(
     private suspend fun saveCurrentConversation() {
         val history = trimToRecentExchanges(chatHistory.value, 20)
         if (history.isEmpty()) return
+
+        // Drop image files no longer referenced by the retained history, so the attached-images
+        // directory does not grow without bound as old turns scroll out of the window.
+        pruneAttachedImages(
+            history.flatMap { message -> ImageMarker.extractIds(message.content) }.toSet(),
+        )
 
         val now = Clock.System.now().toEpochMilliseconds()
         val conversationId = _currentConversationId.value ?: Uuid.random().toString().also {

@@ -90,3 +90,15 @@ expect suspend fun saveFileToDevice(bytes: ByteArray, baseName: String, extensio
  * without deep-linking back to the conversation. No-op on web.
  */
 expect fun sendHeartbeatNotification(title: String, body: String)
+
+/** Directory holding attached images that were offloaded from the chat history. */
+expect fun getAttachedImagesDirectory(): String
+
+/** Writes [bytes] to `<imagesDir>/<id>.jpg`, replacing any existing file. Returns true on success. */
+expect fun writeAttachedImage(id: String, bytes: ByteArray): Boolean
+
+/** Reads `<imagesDir>/<id>.jpg`, or null when the id is unknown or the file is gone. */
+expect fun readAttachedImage(id: String): ByteArray?
+
+/** Removes every stored image whose id is not in [keepIds]. Called after a conversation is saved. */
+expect fun pruneAttachedImages(keepIds: Set<String>)

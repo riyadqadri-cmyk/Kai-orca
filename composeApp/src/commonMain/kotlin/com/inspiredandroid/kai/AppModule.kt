@@ -6,6 +6,7 @@ import com.inspiredandroid.kai.data.DataRepository
 import com.inspiredandroid.kai.data.EmailStore
 import com.inspiredandroid.kai.data.HeartbeatManager
 import com.inspiredandroid.kai.data.MemoryStore
+import com.inspiredandroid.kai.data.PendingImageBuffer
 import com.inspiredandroid.kai.data.NotificationStore
 import com.inspiredandroid.kai.data.RemoteDataRepository
 import com.inspiredandroid.kai.data.SmsDraftStore
@@ -70,6 +71,11 @@ val appModule = module {
     single<ToolExecutor> {
         ToolExecutor()
     }
+    // Shared between the view_image tool (which parks images here) and the tool-call loop
+    // (which drains them into the next request). Must be a singleton or the hand-off never lands.
+    single<PendingImageBuffer> {
+        PendingImageBuffer()
+    }
     single<MemoryStore> {
         MemoryStore(get())
     }
@@ -133,6 +139,7 @@ val appModule = module {
             skillManager = get(),
             sandboxController = get(),
             localInferenceEngine = createLocalInferenceEngine(),
+            pendingImageBuffer = get(),
         )
     }
     single<DataRepository> { get<RemoteDataRepository>() }

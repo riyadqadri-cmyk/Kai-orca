@@ -36,6 +36,7 @@ import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.persistentListOf
 import org.jetbrains.compose.resources.painterResource
 import kotlin.io.encoding.Base64
+import com.inspiredandroid.kai.data.ImageMarker
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 @OptIn(ExperimentalEncodingApi::class, ExperimentalLayoutApi::class)
@@ -45,6 +46,9 @@ internal fun UserMessage(
     attachments: ImmutableList<Attachment> = persistentListOf(),
 ) {
     val showFullScreen = LocalShowFullScreenImage.current
+    // Images attached earlier in this chat live on disk and are referenced as [[image:<id>]]
+    // markers in the stored text. The marker is plumbing, not content — never show it.
+    val visibleMessage = remember(message) { ImageMarker.strip(message) }
     SelectionContainer {
         Row(Modifier.padding(16.dp)) {
             Spacer(Modifier.weight(1f))
@@ -101,13 +105,13 @@ internal fun UserMessage(
                             )
                         }
                     }
-                    if (message.isNotEmpty()) {
+                    if (visibleMessage.isNotEmpty()) {
                         Spacer(Modifier.height(8.dp))
                     }
                 }
-                if (message.isNotEmpty()) {
+                if (visibleMessage.isNotEmpty()) {
                     Text(
-                        text = message,
+                        text = visibleMessage,
                         color = MaterialTheme.colorScheme.onBackground,
                     )
                 }
