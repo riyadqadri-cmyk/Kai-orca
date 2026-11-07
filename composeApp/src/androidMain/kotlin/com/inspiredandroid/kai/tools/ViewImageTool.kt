@@ -58,7 +58,7 @@ The image is delivered on the next turn only. Call again if you need it in a lat
 
             pendingImages.put(
                 key = id,
-                value = Attachment(
+                attachment = Attachment(
                     data = Base64.encode(bytes),
                     mimeType = "image/jpeg",
                     fileName = null,

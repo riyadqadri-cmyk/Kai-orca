@@ -31,15 +31,15 @@ object ImageMarker {
  * In-memory side channel between the `view_image` tool and the tool-call loop.
  *
  * [Tool.execute] can only return JSON-serializable data, so it cannot hand pixels back directly.
- * Instead the tool parks the resolved image here, keyed by call id, and the loop drains it after
+ * Instead the tool parks the resolved image here, keyed by image id, and the loop drains it after
  * executing that round's tools and appends the images as a USER message — DeepSeek rejects
  * images in any other role.
  */
 class PendingImageBuffer {
     private val pending = mutableMapOf<String, Attachment>()
 
-    fun put(callScopedId: String, attachment: Attachment) {
-        pending[callScopedId] = attachment
+    fun put(key: String, attachment: Attachment) {
+        pending[key] = attachment
     }
 
     /** Removes and returns everything parked, so a drained image is sent at most once. */
