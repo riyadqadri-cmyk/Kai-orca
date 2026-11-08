@@ -904,6 +904,9 @@ class RemoteDataRepository(
 
     private var pendingActiveSkillId: String? = null
 
+    /** Image ids persisted by turns that have not yet been rounded up by prune. */
+    private val recentlyWrittenImageIds = mutableSetOf<String>()
+
     /** Built-in skill id; matches the bundled SKILL.md under composeResources. */
     private val createSkillId = "create-skill"
 
@@ -960,6 +963,7 @@ class RemoteDataRepository(
                     val imageId = "img_" + Uuid.random().toString().replace("-", "").take(16)
                     if (writeAttachedImage(imageId, compressed)) {
                         imageIds.add(imageId)
+                        recentlyWrittenImageIds.add(imageId)
                     }
                     // On write failure the image simply stays inline forever — correct, if wasteful.
                     compressedAttachment
@@ -1058,6 +1062,10 @@ class RemoteDataRepository(
                         )
                     }
                 }
+                // Strip BEFORE saving: saveCurrentConversation() prunes image files against
+                // the ids referenced by the retained history, so saving while the attachment is
+                // still inline would compute an empty keep-set and delete the file we just wrote.
+                stripAttachedImagesFromLastUserMessage(imageIds)
                 saveCurrentConversation()
                 return
             }
@@ -1686,8 +1694,12 @@ class RemoteDataRepository(
 
         // Drop image files no longer referenced by the retained history, so the attached-images
         // directory does not grow without bound as old turns scroll out of the window.
+        // Guard against ever deleting an image the current turn just persisted: a save that runs
+        // before the marker is written would otherwise compute an empty keep-set and wipe the
+        // directory (the bug that made view_image return "No image stored").
         pruneAttachedImages(
-            history.flatMap { message -> ImageMarker.extractIds(message.content) }.toSet(),
+            (history.flatMap { message -> ImageMarker.extractIds(message.content) } +
+                recentlyWrittenImageIds).toSet(),
         )
 
         val now = Clock.System.now().toEpochMilliseconds()
