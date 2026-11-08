@@ -902,6 +902,37 @@ class RemoteDataRepository(
         }
     }
 
+    /**
+     * Strips image attachments from the last USER message that still carries a raw image, replacing
+     * them with markers. Used for images fetched through view_image mid-loop: they must be visible
+     * to the model for one round only.
+     */
+    private fun stripDrainedImageAttachments(imageIds: List<String>) {
+        chatHistory.update { history ->
+            val index = history.indexOfLast {
+                it.role == History.Role.USER && it.attachments.any { a -> a.mimeType.startsWith("image/") }
+            }
+            if (index < 0) return@update history
+            val target = history[index]
+            val plainText = ImageMarker.strip(target.content)
+            val ids = if (imageIds.isNotEmpty()) {
+                imageIds
+            } else {
+                target.attachments.filter { it.mimeType.startsWith("image/") }.mapNotNull { it.fileName }
+            }
+            history.toMutableList().apply {
+                this[index] = target.copy(
+                    content = (listOf(plainText) + ids.map { ImageMarker.marker(it) })
+                        .filter { it.isNotEmpty() }
+                        .joinToString("\n"),
+                    attachments = target.attachments
+                        .filterNot { it.mimeType.startsWith("image/") }
+                        .toImmutableList(),
+                )
+            }
+        }
+    }
+
     private var pendingActiveSkillId: String? = null
 
     /** Image ids persisted by turns that have not yet been rounded up by prune. */
@@ -1348,6 +1379,11 @@ class RemoteDataRepository(
             // as a USER message — DeepSeek rejects an image in any other role.
             val drainedImages = pendingImageBuffer.drain()
             if (drainedImages.isNotEmpty()) {
+                // The pixels are needed for exactly one round: the model must see what it fetched,
+                // then the attachment is replaced by a marker. Leaving it in history would re-send
+                // base64 on every subsequent round and turn — the same bloat the first-turn strip
+                // avoids. Mirrors stripAttachedImagesFromLastUserMessage below.
+                val fetchedIds = drainedImages.mapNotNull { it.fileName }
                 history.update { h ->
                     h + History(
                         role = History.Role.USER,
@@ -1355,6 +1391,7 @@ class RemoteDataRepository(
                         attachments = drainedImages.toImmutableList(),
                     )
                 }
+                stripDrainedImageAttachments(fetchedIds)
             }
         }
     }

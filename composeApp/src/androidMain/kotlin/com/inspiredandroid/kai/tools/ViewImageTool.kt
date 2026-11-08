@@ -61,7 +61,7 @@ The image is delivered on the next turn only. Call again if you need it in a lat
                 attachment = Attachment(
                     data = Base64.encode(bytes),
                     mimeType = "image/jpeg",
-                    fileName = null,
+                    fileName = id,
                 ),
             )
 
