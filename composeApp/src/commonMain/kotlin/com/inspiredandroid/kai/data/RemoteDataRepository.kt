@@ -922,8 +922,7 @@ class RemoteDataRepository(
             }
             history.toMutableList().apply {
                 this[index] = target.copy(
-                    content = (listOf(plainText) + ids.map { ImageMarker.marker(it) })
-                        .filter { it.isNotEmpty() }
+                    content = (listOf(plainText).filter { it.isNotEmpty() } + ids.map { ImageMarker.marker(it) })
                         .joinToString("\n"),
                     attachments = target.attachments
                         .filterNot { it.mimeType.startsWith("image/") }
@@ -1312,8 +1311,16 @@ class RemoteDataRepository(
     ): AssistantTurn {
         var iteration = 0
         val recentSignatures = mutableListOf<String>()
+        val pendingStripImageIds = mutableListOf<String>()
+        try {
         while (true) {
             iteration++
+            // A view_image drain from the previous round has now been seen by the model exactly
+            // once. Replace its pixels with markers so later rounds and turns don't re-send base64.
+            if (pendingStripImageIds.isNotEmpty()) {
+                stripDrainedImageAttachments(pendingStripImageIds)
+                pendingStripImageIds.clear()
+            }
             val visible = history.value.filter { it.role != History.Role.TOOL_EXECUTING }.let { full ->
                 // Trim a request copy only — the history flow is the visible, persisted conversation.
                 strategy.historyContextWindowTokens
@@ -1379,11 +1386,9 @@ class RemoteDataRepository(
             // as a USER message — DeepSeek rejects an image in any other role.
             val drainedImages = pendingImageBuffer.drain()
             if (drainedImages.isNotEmpty()) {
-                // The pixels are needed for exactly one round: the model must see what it fetched,
-                // then the attachment is replaced by a marker. Leaving it in history would re-send
-                // base64 on every subsequent round and turn — the same bloat the first-turn strip
-                // avoids. Mirrors stripAttachedImagesFromLastUserMessage below.
-                val fetchedIds = drainedImages.mapNotNull { it.fileName }
+                // Park the ids; the strip happens at the top of the NEXT iteration, after the
+                // model has actually consumed the pixels once. Stripping here would hand the very
+                // next round a marker instead of the image and the tool would be pointless.
                 history.update { h ->
                     h + History(
                         role = History.Role.USER,
@@ -1391,7 +1396,14 @@ class RemoteDataRepository(
                         attachments = drainedImages.toImmutableList(),
                     )
                 }
-                stripDrainedImageAttachments(fetchedIds)
+                pendingStripImageIds += drainedImages.mapNotNull { it.fileName }
+            }
+        }
+        } finally {
+            // Bailouts and early returns must not leave base64 in history. Harmless if already empty.
+            if (pendingStripImageIds.isNotEmpty()) {
+                stripDrainedImageAttachments(pendingStripImageIds)
+                pendingStripImageIds.clear()
             }
         }
     }
