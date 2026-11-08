@@ -1311,15 +1311,22 @@ class RemoteDataRepository(
     ): AssistantTurn {
         var iteration = 0
         val recentSignatures = mutableListOf<String>()
-        val pendingStripImageIds = mutableListOf<String>()
+        // Ids whose pixels were injected into history but not yet sent to the model in a chat call.
+        val deliveredImageIds = mutableListOf<String>()
+        // Ids the model has actually seen once; they are stripped before the next chat call.
+        val seenImageIds = mutableListOf<String>()
+        // Ids consumed by the most recent chat call. Stripped in `finally` if the loop returns
+        // without another iteration (the common view_image case: tool call, then final answer).
+        val lastConsumedImageIds = mutableListOf<String>()
         try {
         while (true) {
             iteration++
-            // A view_image drain from the previous round has now been seen by the model exactly
-            // once. Replace its pixels with markers so later rounds and turns don't re-send base64.
-            if (pendingStripImageIds.isNotEmpty()) {
-                stripDrainedImageAttachments(pendingStripImageIds)
-                pendingStripImageIds.clear()
+            // Pixels that were in history for the previous round have now been sent to the model
+            // exactly once. Replace them with markers so later rounds and turns don't re-send
+            // base64. Anything still in [deliveredImageIds] was never consumed and must be kept.
+            if (seenImageIds.isNotEmpty()) {
+                stripDrainedImageAttachments(seenImageIds)
+                seenImageIds.clear()
             }
             val visible = history.value.filter { it.role != History.Role.TOOL_EXECUTING }.let { full ->
                 // Trim a request copy only — the history flow is the visible, persisted conversation.
@@ -1330,6 +1337,11 @@ class RemoteDataRepository(
             if (iteration > MAX_TOOL_ITERATIONS) {
                 return AssistantTurn(strategy.bailout(visible, systemPrompt, BailoutReason.LIMIT_REACHED))
             }
+            // The model is about to see whatever image pixels are currently in history.
+            seenImageIds += deliveredImageIds
+            lastConsumedImageIds.clear()
+            lastConsumedImageIds += deliveredImageIds
+            deliveredImageIds.clear()
             val result = strategy.chat(visible, systemPrompt)
             if (result.toolCalls.isEmpty()) {
                 // For thinking-only turns, the reasoning text already became the content via
@@ -1396,15 +1408,21 @@ class RemoteDataRepository(
                         attachments = drainedImages.toImmutableList(),
                     )
                 }
-                pendingStripImageIds += drainedImages.mapNotNull { it.fileName }
+                // These pixels are in history but no chat call has seen them yet. If the loop
+                // exits now, they must stay: nothing consumed them.
+                deliveredImageIds += drainedImages.mapNotNull { it.fileName }
             }
         }
         } finally {
-            // Bailouts and early returns must not leave base64 in history. Harmless if already empty.
-            if (pendingStripImageIds.isNotEmpty()) {
-                stripDrainedImageAttachments(pendingStripImageIds)
-                pendingStripImageIds.clear()
+            val stragglers = (seenImageIds + lastConsumedImageIds).distinct()
+            if (stragglers.isNotEmpty()) {
+                // A chat call already consumed these; leaving them would re-send base64 forever.
+                stripDrainedImageAttachments(stragglers)
+                seenImageIds.clear()
+                lastConsumedImageIds.clear()
             }
+            // [deliveredImageIds] is deliberately NOT stripped: nothing consumed those pixels, so
+            // they must remain visible in the turn's output and in history.
         }
     }
 
