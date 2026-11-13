@@ -1,0 +1,1781 @@
+diff --git a/androidApp/src/main/kotlin/com/inspiredandroid/kai/KaiApplication.kt b/androidApp/src/main/kotlin/com/inspiredandroid/kai/KaiApplication.kt
+index 71494b0..9c9380c 100644
+--- a/androidApp/src/main/kotlin/com/inspiredandroid/kai/KaiApplication.kt
++++ b/androidApp/src/main/kotlin/com/inspiredandroid/kai/KaiApplication.kt
+@@ -5,6 +5,8 @@ import androidx.lifecycle.DefaultLifecycleObserver
+ import androidx.lifecycle.LifecycleOwner
+ import androidx.lifecycle.ProcessLifecycleOwner
+ import com.inspiredandroid.kai.data.TaskScheduler
++import com.inspiredandroid.kai.diagnostics.AppLog
++import com.inspiredandroid.kai.diagnostics.initializeAppLogging
+ import com.inspiredandroid.kai.sandbox.sandboxModule
+ import org.koin.android.ext.android.inject
+ import org.koin.android.ext.koin.androidContext
+@@ -16,6 +18,7 @@ class KaiApplication : Application() {
+ 
+     override fun onCreate() {
+         super.onCreate()
++        initializeAppLogging(this)
+         startKoin {
+             androidContext(this@KaiApplication)
+             modules(appModule, sandboxModule)
+@@ -25,9 +28,11 @@ class KaiApplication : Application() {
+         // it survives backgrounding and only clears on Activity destruction.
+         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+             override fun onStart(owner: LifecycleOwner) {
++                AppLog.info("App", "Entered foreground")
+                 taskScheduler.appInForeground = true
+             }
+             override fun onStop(owner: LifecycleOwner) {
++                AppLog.info("App", "Entered background")
+                 taskScheduler.appInForeground = false
+             }
+         })
+diff --git a/composeApp/build.gradle.kts b/composeApp/build.gradle.kts
+index 2fff728..73bcf74 100644
+--- a/composeApp/build.gradle.kts
++++ b/composeApp/build.gradle.kts
+@@ -99,6 +99,7 @@ kotlin {
+                 implementation(kotlin("test"))
+                 implementation(libs.kotlinx.coroutines.test)
+                 implementation(libs.turbine)
++                implementation(libs.ktor.client.mock)
+                 implementation(libs.multiplatform.settings.test)
+             }
+         }
+diff --git a/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/diagnostics/AndroidAppLog.kt b/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/diagnostics/AndroidAppLog.kt
+new file mode 100644
+index 0000000..258f399
+--- /dev/null
++++ b/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/diagnostics/AndroidAppLog.kt
+@@ -0,0 +1,41 @@
++package com.inspiredandroid.kai.diagnostics
++
++import android.content.Context
++import com.inspiredandroid.kai.Version
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.FlowPreview
++import kotlinx.coroutines.SupervisorJob
++import kotlinx.coroutines.flow.debounce
++import kotlinx.coroutines.launch
++import java.io.File
++
++/** Keep recent diagnostics across process restarts, including the last uncaught failure. */
++@OptIn(FlowPreview::class)
++fun initializeAppLogging(context: Context) {
++    val file = File(context.noBackupFilesDir, "diagnostics.log")
++    val lock = Any()
++    runCatching {
++        if (file.exists()) AppLog.restore(file.readText().takeLast(AppLog.MAX_CHARS))
++    }.onFailure { AppLog.error("Log", "Could not restore previous diagnostics", it) }
++
++    fun persist() {
++        synchronized(lock) {
++            runCatching { file.writeText(AppLog.text.value) }
++                .onFailure { android.util.Log.w("AppLog", "Could not save diagnostics", it) }
++        }
++    }
++
++    CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
++        AppLog.text.debounce(250).collect { persist() }
++    }
++    val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
++    if (previousHandler != null) {
++        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
++            AppLog.error("Crash", "Uncaught failure on ${thread.name}", error)
++            persist()
++            previousHandler.uncaughtException(thread, error)
++        }
++    }
++    AppLog.info("App", "Started Kai ${Version.appVersion}; Android ${android.os.Build.VERSION.RELEASE}")
++}
+diff --git a/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/sandbox/LinuxSandboxManager.kt b/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/sandbox/LinuxSandboxManager.kt
+index baf13d1..73cd344 100644
+--- a/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/sandbox/LinuxSandboxManager.kt
++++ b/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/sandbox/LinuxSandboxManager.kt
+@@ -8,6 +8,7 @@ import com.inspiredandroid.kai.SandboxStatusLabel
+ import com.inspiredandroid.kai.TerminalLine
+ import com.inspiredandroid.kai.data.AppSettings
+ import com.inspiredandroid.kai.data.ConversationStorage
++import com.inspiredandroid.kai.diagnostics.AppLog
+ import com.inspiredandroid.kai.linux.DistroSpec
+ import com.inspiredandroid.kai.linux.GuestFileMap
+ import com.inspiredandroid.kai.linux.HomeMigration
+@@ -212,7 +213,7 @@ class LinuxSandboxManager(
+             } catch (_: kotlinx.coroutines.CancellationException) {
+                 _state.value = SandboxState.Ready
+             } catch (e: Exception) {
+-                android.util.Log.e("LinuxSandbox", "Home migration failed", e)
++                AppLog.error("LinuxSandbox", "Home migration failed", e)
+                 _state.value = SandboxState.Error(SandboxStatusLabel.Failure.Copy(e.message.orEmpty()))
+             }
+         }
+@@ -237,7 +238,7 @@ class LinuxSandboxManager(
+             } catch (e: kotlinx.coroutines.CancellationException) {
+                 checkExistingInstallation()
+             } catch (e: Exception) {
+-                android.util.Log.e("LinuxSandbox", "Setup failed", e)
++                AppLog.error("LinuxSandbox", "Setup failed", e)
+                 marker = paths.readMarker()
+                 _state.value = SandboxState.Error(SandboxStatusLabel.Failure.Setup(e.message.orEmpty()))
+             }
+@@ -399,7 +400,7 @@ class LinuxSandboxManager(
+             } catch (_: kotlinx.coroutines.CancellationException) {
+                 _state.value = SandboxState.Ready
+             } catch (e: Exception) {
+-                android.util.Log.e("LinuxSandbox", "Package install exception", e)
++                AppLog.error("LinuxSandbox", "Package install exception", e)
+                 _state.value = SandboxState.Error(SandboxStatusLabel.Failure.Install(e.message.orEmpty()))
+             }
+         }
+@@ -426,7 +427,7 @@ class LinuxSandboxManager(
+                     val detail = listOf("stderr", "error", "stdout")
+                         .firstNotNullOfOrNull { (result[it] as? String)?.takeIf(String::isNotBlank) }
+                         .orEmpty()
+-                    android.util.Log.e("LinuxSandbox", "Failed to install $pkg: $detail")
++                    AppLog.error("LinuxSandbox", "Failed to install $pkg: $detail")
+                     _state.value = SandboxState.Error(SandboxStatusLabel.Failure.Package(pkg, detail.take(200)))
+                     return
+                 }
+@@ -436,7 +437,7 @@ class LinuxSandboxManager(
+         // `ssh user@host` from now on works without a prompt this shell cannot
+         // answer. Idempotent; failures here are non-fatal.
+         runCatching { SshConfigManager(File(homePath)).ensureDefaults() }
+-            .onFailure { android.util.Log.w("LinuxSandbox", "ssh defaults seed failed: ${it.message}") }
++            .onFailure { AppLog.error("LinuxSandbox", "ssh defaults seed failed: ${it.message}") }
+         _state.value = SandboxState.Ready
+     }
+ 
+diff --git a/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/sandbox/SessionShell.kt b/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/sandbox/SessionShell.kt
+index 341c26c..5c4fa54 100644
+--- a/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/sandbox/SessionShell.kt
++++ b/composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/sandbox/SessionShell.kt
+@@ -2,6 +2,8 @@ package com.inspiredandroid.kai.sandbox
+ 
+ import androidx.compose.runtime.snapshots.SnapshotStateList
+ import com.inspiredandroid.kai.TerminalLine
++import com.inspiredandroid.kai.diagnostics.AppLog
++import kotlinx.coroutines.CancellationException
+ import kotlinx.coroutines.NonCancellable
+ import kotlinx.coroutines.withContext
+ 
+@@ -39,9 +41,10 @@ class SessionShell(
+         onStdout: ((String) -> Unit)? = null,
+         onStderr: ((String) -> Unit)? = null,
+     ): Map<String, Any> {
++        AppLog.info("Terminal", "Starting shell command; timeout=${timeoutSeconds}s")
+         buffer.append(TerminalLine.Command(displayCommand))
+         try {
+-            return inner.run(
++            val result = inner.run(
+                 command = command,
+                 timeoutSeconds = timeoutSeconds,
+                 onStdout = { line ->
+@@ -53,6 +56,14 @@ class SessionShell(
+                     onStderr?.invoke(line)
+                 },
+             )
++            AppLog.info("Terminal", "Shell command finished; exit_code=${result["exit_code"]}; success=${result["success"]}")
++            return result
++        } catch (e: CancellationException) {
++            AppLog.info("Terminal", "Shell command cancelled")
++            throw e
++        } catch (e: Exception) {
++            AppLog.error("Terminal", "Shell command failed", e)
++            throw e
+         } finally {
+             val lines = withContext(NonCancellable) { buffer.flush() }
+             onChange?.invoke(lines)
+diff --git a/composeApp/src/commonMain/composeResources/values/strings.xml b/composeApp/src/commonMain/composeResources/values/strings.xml
+index 6bf3d70..d7ded76 100644
+--- a/composeApp/src/commonMain/composeResources/values/strings.xml
++++ b/composeApp/src/commonMain/composeResources/values/strings.xml
+@@ -513,4 +513,6 @@
+     <string name="terminal_sandbox_not_ready">Sandbox is not ready</string>
+     <string name="chat_edit_submission_content_description">Edit submission</string>
+     <string name="chat_cancel_edit_content_description">Cancel edit</string>
++    <string name="settings_tab_logs">Logs</string>
++    <string name="settings_logs_empty">No log entries yet.</string>
+ </resources>
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/data/RemoteDataRepository.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/data/RemoteDataRepository.kt
+index 097f367..bde4916 100644
+--- a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/data/RemoteDataRepository.kt
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/data/RemoteDataRepository.kt
+@@ -5,12 +5,10 @@ package com.inspiredandroid.kai.data
+ import com.inspiredandroid.kai.SandboxController
+ import com.inspiredandroid.kai.compressImageBytes
+ import com.inspiredandroid.kai.currentPlatform
+-import com.inspiredandroid.kai.pruneAttachedImages
+-import com.inspiredandroid.kai.readAttachedImage
+-import com.inspiredandroid.kai.writeAttachedImage
+ import com.inspiredandroid.kai.data.providers.buildAnthropicMessages
+ import com.inspiredandroid.kai.data.providers.buildOpenAIMessages
+ import com.inspiredandroid.kai.data.providers.toResponsesInput
++import com.inspiredandroid.kai.diagnostics.AppLog
+ import com.inspiredandroid.kai.email.EmailPoller
+ import com.inspiredandroid.kai.formatFileSize
+ import com.inspiredandroid.kai.getAvailableTools
+@@ -53,6 +51,8 @@ import com.inspiredandroid.kai.network.dtos.openairesponses.OpenAIResponsesRespo
+ import com.inspiredandroid.kai.network.toUiError
+ import com.inspiredandroid.kai.network.tools.Tool
+ import com.inspiredandroid.kai.network.tools.ToolInfo
++import com.inspiredandroid.kai.pruneAttachedImages
++import com.inspiredandroid.kai.readAttachedImage
+ import com.inspiredandroid.kai.skills.RegistrySkillEntry
+ import com.inspiredandroid.kai.skills.SkillManager
+ import com.inspiredandroid.kai.skills.SkillManifest
+@@ -66,6 +66,7 @@ import com.inspiredandroid.kai.ui.chat.History
+ import com.inspiredandroid.kai.ui.chat.ToolCallInfo
+ import com.inspiredandroid.kai.ui.chat.toGeminiMessageDto
+ import com.inspiredandroid.kai.ui.settings.SettingsModel
++import com.inspiredandroid.kai.writeAttachedImage
+ import io.github.vinceglb.filekit.PlatformFile
+ import io.github.vinceglb.filekit.mimeType
+ import io.github.vinceglb.filekit.name
+@@ -1037,6 +1038,7 @@ class RemoteDataRepository(
+ 
+         val fallbackEntries = getOrderedFallbackEntries().filter { hasValidInstanceApiKey(it.instanceId, it.service) }
+ 
++        AppLog.info("Chat", "Starting turn; provider order=${fallbackEntries.joinToString { entry -> "${entry.service.displayName}/${instanceCredentials(entry.instanceId, entry.service).modelId}" }}")
+         val historyChars = messages.sumOf { it.content.length } + (systemPrompt?.length ?: 0)
+ 
+         var lastException: Exception? = null
+@@ -1044,12 +1046,16 @@ class RemoteDataRepository(
+ 
+         try {
+             for ((index, entry) in fallbackEntries.withIndex()) {
++                val diagnosticModel = instanceCredentials(entry.instanceId, entry.service).modelId
++                val diagnosticProvider = "${entry.service.displayName}/$diagnosticModel"
++                AppLog.info("Chat", "Trying ${index + 1}/${fallbackEntries.size}: $diagnosticProvider; history chars=$historyChars")
+                 // Skip fallback services whose context window is too small for the current history
+                 // On-device models handle their own context limits, so skip this check for them
+                 if (!entry.service.isOnDevice) {
+                     val creds = instanceCredentials(entry.instanceId, entry.service)
+                     val entryWindowChars = ModelCatalog.estimateContextWindow(creds.modelId) * ESTIMATED_CHARS_PER_TOKEN
+                     if (historyChars > entryWindowChars) {
++                        AppLog.error("Fallback", "Skipping $diagnosticProvider: history $historyChars chars exceeds estimated context $entryWindowChars chars")
+                         lastException = ContextWindowExceededException()
+                         _fallbackStatus.value = FallbackStatus(
+                             serviceName = entry.service.displayName,
+@@ -1067,6 +1073,7 @@ class RemoteDataRepository(
+                     askWithService(entry.service, messages, systemPrompt, entry.instanceId)
+                 } catch (e: Exception) {
+                     if (e is kotlinx.coroutines.CancellationException) throw e
++                    AppLog.error("Fallback", "$diagnosticProvider failed; next=${fallbackEntries.getOrNull(index + 1)?.service?.displayName ?: "none"}", e)
+                     // On-device services should not silently fall back — surface the error
+                     if (entry.service.isOnDevice) throw e
+                     lastException = e
+@@ -1077,6 +1084,7 @@ class RemoteDataRepository(
+                     )
+                     continue
+                 }
++                AppLog.info("Chat", "Turn succeeded via $diagnosticProvider")
+                 if (index > 0) {
+                     fallbackServiceName = entry.service.displayName
+                 }
+@@ -1100,6 +1108,7 @@ class RemoteDataRepository(
+                 return
+             }
+ 
++            AppLog.error("Fallback", "All ${fallbackEntries.size} eligible providers failed", lastException)
+             throw if (fallbackEntries.size > 1 && lastException != null) {
+                 AllServicesFailedException()
+             } else {
+@@ -1319,100 +1328,100 @@ class RemoteDataRepository(
+         // without another iteration (the common view_image case: tool call, then final answer).
+         val lastConsumedImageIds = mutableListOf<String>()
+         try {
+-        while (true) {
+-            iteration++
+-            // Pixels that were in history for the previous round have now been sent to the model
+-            // exactly once. Replace them with markers so later rounds and turns don't re-send
+-            // base64. Anything still in [deliveredImageIds] was never consumed and must be kept.
+-            if (seenImageIds.isNotEmpty()) {
+-                stripDrainedImageAttachments(seenImageIds)
+-                seenImageIds.clear()
+-            }
+-            val visible = history.value.filter { it.role != History.Role.TOOL_EXECUTING }.let { full ->
+-                // Trim a request copy only — the history flow is the visible, persisted conversation.
+-                strategy.historyContextWindowTokens
+-                    ?.let { trimHistoryForContext(full, systemPrompt?.length ?: 0, it).ifEmpty { full } }
+-                    ?: full
+-            }
+-            if (iteration > MAX_TOOL_ITERATIONS) {
+-                return AssistantTurn(strategy.bailout(visible, systemPrompt, BailoutReason.LIMIT_REACHED))
+-            }
+-            // The model is about to see whatever image pixels are currently in history.
+-            seenImageIds += deliveredImageIds
+-            lastConsumedImageIds.clear()
+-            lastConsumedImageIds += deliveredImageIds
+-            deliveredImageIds.clear()
+-            val result = strategy.chat(visible, systemPrompt)
+-            if (result.toolCalls.isEmpty()) {
+-                // For thinking-only turns, the reasoning text already became the content via
+-                // `isContentFromReasoning`, so don't surface it again as a reasoning trace.
+-                val reasoning = result.reasoningContent?.takeIf { !result.isThinkingContent }
+-                return AssistantTurn(result.textContent, reasoning)
+-            }
+-
+-            val signatures = result.toolCalls.map { "${it.name}:${it.arguments.hashCode()}" }
+-            if (isRepeatingToolCalls(recentSignatures, signatures)) {
+-                return AssistantTurn(strategy.bailout(visible, systemPrompt, BailoutReason.REPEATING))
+-            }
+-            recentSignatures.addAll(signatures)
+-
+-            history.update {
+-                it.toMutableList().apply {
+-                    add(
+-                        History(
+-                            role = History.Role.ASSISTANT,
+-                            content = result.textContent,
+-                            isThinking = result.isThinkingContent,
+-                            toolCalls = result.toolCalls.toImmutableList(),
+-                            reasoningContent = result.reasoningContent,
+-                        ),
+-                    )
++            while (true) {
++                iteration++
++                // Pixels that were in history for the previous round have now been sent to the model
++                // exactly once. Replace them with markers so later rounds and turns don't re-send
++                // base64. Anything still in [deliveredImageIds] was never consumed and must be kept.
++                if (seenImageIds.isNotEmpty()) {
++                    stripDrainedImageAttachments(seenImageIds)
++                    seenImageIds.clear()
++                }
++                val visible = history.value.filter { it.role != History.Role.TOOL_EXECUTING }.let { full ->
++                    // Trim a request copy only — the history flow is the visible, persisted conversation.
++                    strategy.historyContextWindowTokens
++                        ?.let { trimHistoryForContext(full, systemPrompt?.length ?: 0, it).ifEmpty { full } }
++                        ?: full
++                }
++                if (iteration > MAX_TOOL_ITERATIONS) {
++                    return AssistantTurn(strategy.bailout(visible, systemPrompt, BailoutReason.LIMIT_REACHED))
++                }
++                // The model is about to see whatever image pixels are currently in history.
++                seenImageIds += deliveredImageIds
++                lastConsumedImageIds.clear()
++                lastConsumedImageIds += deliveredImageIds
++                deliveredImageIds.clear()
++                val result = strategy.chat(visible, systemPrompt)
++                if (result.toolCalls.isEmpty()) {
++                    // For thinking-only turns, the reasoning text already became the content via
++                    // `isContentFromReasoning`, so don't surface it again as a reasoning trace.
++                    val reasoning = result.reasoningContent?.takeIf { !result.isThinkingContent }
++                    return AssistantTurn(result.textContent, reasoning)
+                 }
+-            }
+ 
+-            val toolResults = executeToolCallsInParallel(
+-                result.toolCalls.map { Triple(it.id, it.name, it.arguments) },
+-                history,
+-            )
++                val signatures = result.toolCalls.map { "${it.name}:${it.arguments.hashCode()}" }
++                if (isRepeatingToolCalls(recentSignatures, signatures)) {
++                    return AssistantTurn(strategy.bailout(visible, systemPrompt, BailoutReason.REPEATING))
++                }
++                recentSignatures.addAll(signatures)
+ 
+-            history.update { h ->
+-                buildList(h.size + toolResults.size) {
+-                    for (entry in h) {
+-                        if (entry.role != History.Role.TOOL_EXECUTING) add(entry)
+-                    }
+-                    for ((callId, name, content) in toolResults) {
++                history.update {
++                    it.toMutableList().apply {
+                         add(
+                             History(
+-                                role = History.Role.TOOL,
+-                                content = content,
+-                                toolCallId = callId,
+-                                toolName = name,
++                                role = History.Role.ASSISTANT,
++                                content = result.textContent,
++                                isThinking = result.isThinkingContent,
++                                toolCalls = result.toolCalls.toImmutableList(),
++                                reasoningContent = result.reasoningContent,
+                             ),
+                         )
+                     }
+                 }
+-            }
+ 
+-            // view_image cannot return pixels through a tool result (it is text/JSON only), so
+-            // the tool parks them in the shared buffer. Deliver them now, before the next round,
+-            // as a USER message — DeepSeek rejects an image in any other role.
+-            val drainedImages = pendingImageBuffer.drain()
+-            if (drainedImages.isNotEmpty()) {
+-                // Park the ids; the strip happens at the top of the NEXT iteration, after the
+-                // model has actually consumed the pixels once. Stripping here would hand the very
+-                // next round a marker instead of the image and the tool would be pointless.
++                val toolResults = executeToolCallsInParallel(
++                    result.toolCalls.map { Triple(it.id, it.name, it.arguments) },
++                    history,
++                )
++
+                 history.update { h ->
+-                    h + History(
+-                        role = History.Role.USER,
+-                        content = "Images loaded via view_image:",
+-                        attachments = drainedImages.toImmutableList(),
+-                    )
++                    buildList(h.size + toolResults.size) {
++                        for (entry in h) {
++                            if (entry.role != History.Role.TOOL_EXECUTING) add(entry)
++                        }
++                        for ((callId, name, content) in toolResults) {
++                            add(
++                                History(
++                                    role = History.Role.TOOL,
++                                    content = content,
++                                    toolCallId = callId,
++                                    toolName = name,
++                                ),
++                            )
++                        }
++                    }
++                }
++
++                // view_image cannot return pixels through a tool result (it is text/JSON only), so
++                // the tool parks them in the shared buffer. Deliver them now, before the next round,
++                // as a USER message — DeepSeek rejects an image in any other role.
++                val drainedImages = pendingImageBuffer.drain()
++                if (drainedImages.isNotEmpty()) {
++                    // Park the ids; the strip happens at the top of the NEXT iteration, after the
++                    // model has actually consumed the pixels once. Stripping here would hand the very
++                    // next round a marker instead of the image and the tool would be pointless.
++                    history.update { h ->
++                        h + History(
++                            role = History.Role.USER,
++                            content = "Images loaded via view_image:",
++                            attachments = drainedImages.toImmutableList(),
++                        )
++                    }
++                    // These pixels are in history but no chat call has seen them yet. If the loop
++                    // exits now, they must stay: nothing consumed them.
++                    deliveredImageIds += drainedImages.mapNotNull { it.fileName }
+                 }
+-                // These pixels are in history but no chat call has seen them yet. If the loop
+-                // exits now, they must stay: nothing consumed them.
+-                deliveredImageIds += drainedImages.mapNotNull { it.fileName }
+             }
+-        }
+         } finally {
+             val stragglers = (seenImageIds + lastConsumedImageIds).distinct()
+             if (stragglers.isNotEmpty()) {
+@@ -1569,9 +1578,14 @@ class RemoteDataRepository(
+                 return block()
+             } catch (e: Exception) {
+                 if (e is kotlinx.coroutines.CancellationException) throw e
+-                if (isNonRetryableException(e)) throw e
++                if (isNonRetryableException(e)) {
++                    AppLog.error("Retry", "Non-retryable API failure; moving to fallback", e)
++                    throw e
++                }
+                 lastException = e
++                AppLog.error("Retry", "API attempt ${attempt + 1}/${MAX_API_RETRIES + 1} failed", e)
+                 if (attempt < MAX_API_RETRIES) {
++                    AppLog.info("Retry", "Retrying in ${attempt + 1} seconds")
+                     delay((attempt + 1).seconds)
+                 }
+             }
+@@ -1765,8 +1779,10 @@ class RemoteDataRepository(
+         // before the marker is written would otherwise compute an empty keep-set and wipe the
+         // directory (the bug that made view_image return "No image stored").
+         pruneAttachedImages(
+-            (history.flatMap { message -> ImageMarker.extractIds(message.content) } +
+-                recentlyWrittenImageIds).toSet(),
++            (
++                history.flatMap { message -> ImageMarker.extractIds(message.content) } +
++                    recentlyWrittenImageIds
++                ).toSet(),
+         )
+ 
+         val now = Clock.System.now().toEpochMilliseconds()
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/data/ToolExecutor.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/data/ToolExecutor.kt
+index 216cca5..bd8c170 100644
+--- a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/data/ToolExecutor.kt
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/data/ToolExecutor.kt
+@@ -1,5 +1,6 @@
+ package com.inspiredandroid.kai.data
+ 
++import com.inspiredandroid.kai.diagnostics.AppLog
+ import com.inspiredandroid.kai.getAvailableTools
+ import com.inspiredandroid.kai.getPlatformToolDefinitions
+ import com.inspiredandroid.kai.network.tools.Tool
+@@ -47,13 +48,18 @@ class ToolExecutor(
+         arguments: String,
+         conversationId: String? = null,
+     ): String {
++        AppLog.info("Tool", "Starting $name")
+         val tools = toolsProvider()
+         val tool = tools.find { it.schema.name == name }
+-            ?: return toolErrorJson("Unknown tool: $name")
++            ?: run {
++                AppLog.error("Tool", "Unknown tool: $name")
++                return toolErrorJson("Unknown tool: $name")
++            }
+ 
+         val args = try {
+             parseJsonToMap(arguments)
+         } catch (e: Exception) {
++            AppLog.error("Tool", "Could not parse arguments for $name (${e::class.simpleName})")
+             return toolErrorJson("Failed to parse arguments: ${e.message}")
+         }
+ 
+@@ -79,14 +85,19 @@ class ToolExecutor(
+ 
+                 else -> buildJsonObject { put("result", result.toString()) }.toString()
+             }
++            val failed = (result as? Map<*, *>)?.get("success") == false
++            if (failed) AppLog.error("Tool", "$name returned success=false") else AppLog.info("Tool", "Completed $name; result chars=${resultString.length}")
+             truncateResult(resultString)
+         } catch (e: TimeoutCancellationException) {
++            AppLog.error("Tool", "$name timed out after ${tool.timeout}")
+             toolErrorJson("Tool '$name' timed out after ${tool.timeout}")
+         } catch (e: CancellationException) {
+             // Cooperative cancellation (user pressed stop) must propagate, not become a
+             // fake tool result the loop would keep reasoning about.
++            AppLog.info("Tool", "Cancelled $name")
+             throw e
+         } catch (e: Exception) {
++            AppLog.error("Tool", "$name failed", e)
+             toolErrorJson("Tool execution failed: ${e.message}")
+         }
+     }
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/diagnostics/AppLog.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/diagnostics/AppLog.kt
+new file mode 100644
+index 0000000..0b1a56d
+--- /dev/null
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/diagnostics/AppLog.kt
+@@ -0,0 +1,55 @@
++package com.inspiredandroid.kai.diagnostics
++
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.asStateFlow
++import kotlinx.coroutines.flow.update
++import kotlin.time.Clock
++
++/** A bounded, observable log. Never send prompts, tool arguments, or credentials here. */
++object AppLog {
++    internal const val MAX_CHARS = 256_000
++    private val _text = MutableStateFlow("")
++    val text = _text.asStateFlow()
++    private val secrets = MutableStateFlow<Set<String>>(emptySet())
++
++    fun registerSecret(value: String) {
++        if (value.isNotBlank()) secrets.update { it + value }
++    }
++
++    fun info(tag: String, message: String) = record("INFO", tag, message)
++
++    fun error(tag: String, message: String, cause: Throwable? = null) {
++        record("ERROR", tag, message + (cause?.let { "\n${it.stackTraceToString()}" } ?: ""))
++    }
++
++    fun restore(previous: String) {
++        _text.value = bounded(redact(previous))
++    }
++
++    private fun record(level: String, tag: String, message: String) {
++        val line = "${Clock.System.now()} [$level] [$tag] ${redact(message).take(12_000)}\n"
++        _text.update { bounded(it + line) }
++    }
++
++    internal fun redact(message: String): String {
++        var safe = message
++        // Replace longer values first in case one configured key is a prefix of another.
++        for (secret in secrets.value.sortedByDescending { it.length }) {
++            safe = safe.replace(secret, "[REDACTED]")
++        }
++        safe = Regex("(?i)Bearer\\s+[^\\s\"',}]+").replace(safe, "Bearer [REDACTED]")
++        safe = Regex("(?i)([\"']?(?:api[-_]?key|access[-_]?token|refresh[-_]?token|password|authorization|cookie)[\"']?\\s*[:=]\\s*)[\"']?[^\\s\"',}&]+").replace(safe) {
++            it.groupValues[1] + "[REDACTED]"
++        }
++        // URLs in exception messages may contain credentials in user-info or query values.
++        safe = Regex("(https?://)[^/\\s@]+@").replace(safe, "$1[REDACTED]@")
++        safe = Regex("([?&][^=\\s&]+)=([^&\\s]+)").replace(safe, "$1=[REDACTED]")
++        return safe
++    }
++
++    private fun bounded(value: String): String {
++        if (value.length <= MAX_CHARS) return value
++        val tail = value.takeLast(MAX_CHARS)
++        return tail.substringAfter('\n', tail)
++    }
++}
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/DiagnosticLogging.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/DiagnosticLogging.kt
+new file mode 100644
+index 0000000..fea217c
+--- /dev/null
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/DiagnosticLogging.kt
+@@ -0,0 +1,33 @@
++package com.inspiredandroid.kai.network
++
++import com.inspiredandroid.kai.diagnostics.AppLog
++import io.ktor.client.plugins.api.createClientPlugin
++import io.ktor.http.isSuccess
++import io.ktor.util.AttributeKey
++import kotlin.time.TimeSource
++
++private val startedAt = AttributeKey<TimeSource.Monotonic.ValueTimeMark>("diagnostics-started-at")
++
++/** Metadata only: leave response bodies untouched, including streaming responses. */
++internal val DiagnosticLogging = createClientPlugin("DiagnosticLogging") {
++    onRequest { request, _ ->
++        listOf("Authorization", "x-api-key", "x-goog-api-key").forEach { name ->
++            request.headers[name]?.removePrefix("Bearer ")?.let(AppLog::registerSecret)
++        }
++        request.attributes.put(startedAt, TimeSource.Monotonic.markNow())
++        val url = request.url.build()
++        AppLog.info("HTTP", "${request.method.value} ${url.host}${url.encodedPath}")
++    }
++    onResponse { response ->
++        val request = response.call.request
++        val elapsed = request.attributes.getOrNull(startedAt)?.elapsedNow()?.inWholeMilliseconds
++        val summary = "${request.method.value} ${request.url.host}${request.url.encodedPath} -> HTTP ${response.status.value} (${elapsed ?: "?"} ms)"
++        if (response.status.isSuccess()) {
++            AppLog.info("HTTP", summary)
++        } else {
++            val requestId = response.headers["x-request-id"] ?: response.headers["cf-ray"]
++            val retryAfter = response.headers["retry-after"]
++            AppLog.error("HTTP", "$summary; request-id=${requestId ?: "unavailable"}; retry-after=${retryAfter ?: "unavailable"}")
++        }
++    }
++}
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/Requests.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/Requests.kt
+index a2e7126..592aa78 100644
+--- a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/Requests.kt
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/Requests.kt
+@@ -5,8 +5,8 @@ package com.inspiredandroid.kai.network
+ import com.inspiredandroid.kai.Version
+ import com.inspiredandroid.kai.currentPlatform
+ import com.inspiredandroid.kai.data.Service
++import com.inspiredandroid.kai.diagnostics.AppLog
+ import com.inspiredandroid.kai.httpClient
+-import com.inspiredandroid.kai.isDebugBuild
+ import com.inspiredandroid.kai.network.dtos.anthropic.AnthropicChatRequestDto
+ import com.inspiredandroid.kai.network.dtos.anthropic.AnthropicChatResponseDto
+ import com.inspiredandroid.kai.network.dtos.anthropic.AnthropicModelsResponseDto
+@@ -24,37 +24,34 @@ import com.inspiredandroid.kai.network.dtos.openairesponses.OpenAIResponsesReque
+ import com.inspiredandroid.kai.network.dtos.openairesponses.OpenAIResponsesResponseDto
+ import com.inspiredandroid.kai.network.tools.Tool
+ import io.ktor.client.call.body
++import io.ktor.client.plugins.HttpResponseValidator
+ import io.ktor.client.plugins.HttpTimeout
+ import io.ktor.client.plugins.UserAgent
+ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+-import io.ktor.client.plugins.logging.EMPTY
+-import io.ktor.client.plugins.logging.LogLevel
+-import io.ktor.client.plugins.logging.Logger
+-import io.ktor.client.plugins.logging.Logging
+ import io.ktor.client.plugins.timeout
+ import io.ktor.client.request.HttpRequestBuilder
+ import io.ktor.client.request.bearerAuth
+ import io.ktor.client.request.get
+ import io.ktor.client.request.header
+-import io.ktor.client.request.preparePost
+ import io.ktor.client.request.post
++import io.ktor.client.request.preparePost
+ import io.ktor.client.request.setBody
+ import io.ktor.client.statement.HttpResponse
+-import io.ktor.client.statement.bodyAsText
+ import io.ktor.client.statement.bodyAsChannel
+-import io.ktor.utils.io.readUTF8Line
++import io.ktor.client.statement.bodyAsText
+ import io.ktor.http.ContentType
+ import io.ktor.http.content.TextContent
+ import io.ktor.http.contentType
+ import io.ktor.http.isSuccess
+ import io.ktor.serialization.kotlinx.json.json
++import io.ktor.utils.io.readUTF8Line
+ import kotlinx.coroutines.CancellationException
+ import kotlinx.serialization.json.Json
+ import kotlinx.serialization.json.JsonArray
+ import kotlinx.serialization.json.JsonObject
+ import kotlinx.serialization.json.JsonPrimitive
+-import kotlinx.serialization.json.intOrNull
+ import kotlinx.serialization.json.contentOrNull
++import kotlinx.serialization.json.intOrNull
+ import kotlinx.serialization.json.jsonObject
+ import kotlinx.serialization.json.jsonPrimitive
+ import kotlin.time.Duration.Companion.seconds
+@@ -157,23 +154,18 @@ class Requests {
+             requestTimeoutMillis = 180.seconds.inWholeMilliseconds
+             socketTimeoutMillis = 180.seconds.inWholeMilliseconds
+         }
+-        install(Logging) {
+-            if (isDebugBuild) {
+-                logger = DebugKtorLogger()
+-                level = LogLevel.BODY
+-            } else {
+-                logger = Logger.EMPTY
+-                level = LogLevel.NONE
++        install(DiagnosticLogging)
++        HttpResponseValidator {
++            handleResponseExceptionWithRequest { cause, request ->
++                if (cause is CancellationException) {
++                    AppLog.info("HTTP", "Cancelled ${request.method.value} ${request.url.host}${request.url.encodedPath}")
++                } else {
++                    AppLog.error("HTTP", "Transport/response failure: ${request.method.value} ${request.url.host}${request.url.encodedPath}", cause)
++                }
+             }
+         }
+     }
+ 
+-    class DebugKtorLogger : Logger {
+-        override fun log(message: String) {
+-            println("[KTOR] $message")
+-        }
+-    }
+-
+     // region Gemini
+ 
+     suspend fun getGeminiModels(credentials: ServiceCredentials): Result<GeminiModelsResponseDto> = try {
+@@ -230,14 +222,15 @@ class Requests {
+         if (response.status.isSuccess()) {
+             Result.success(response.body())
+         } else {
++            val errorBody = response.bodyAsText()
++            AppLog.error("Provider", "Gemini HTTP ${response.status.value} error body: ${errorBody.take(8_000)}")
+             when (response.status.value) {
+                 429 -> throw GeminiRateLimitExceededException()
+ 
+                 403 -> throw GeminiInvalidApiKeyException()
+ 
+                 else -> {
+-                    val responseBody = response.bodyAsText()
+-                    if (responseBody.contains("API_KEY_INVALID", ignoreCase = true)) {
++                    if (errorBody.contains("API_KEY_INVALID", ignoreCase = true)) {
+                         throw GeminiInvalidApiKeyException()
+                     } else {
+                         throw GeminiGenericException("Chat request failed: ${response.status}")
+@@ -267,6 +260,7 @@ class Requests {
+     ): Result<OpenAICompatibleChatResponseDto> = try {
+         val apiKey = getApiKeyOrThrow(service, credentials)
+         val model = credentials.modelId.ifEmpty { null }
++        AppLog.info("Provider", "${service.displayName} model=${model ?: "default"}; messages=${messages.size}; tools=${tools.size}")
+         val url = resolveUrl(service, credentials, service.chatUrl)
+         val response: HttpResponse =
+             defaultClient.post(url) {
+@@ -280,9 +274,13 @@ class Requests {
+                         messages = messages,
+                         model = model,
+                         tools = tools.toRequestTools { it.toRequestTool() },
+-                        thinking = if (service == Service.DeepSeek) OpenAICompatibleChatRequestDto.Thinking(
+-                            if (deepSeekThinkingEnabled) "enabled" else "disabled"
+-                        ) else null,
++                        thinking = if (service == Service.DeepSeek) {
++                            OpenAICompatibleChatRequestDto.Thinking(
++                                if (deepSeekThinkingEnabled) "enabled" else "disabled",
++                            )
++                        } else {
++                            null
++                        },
+                     ),
+                 )
+             }
+@@ -294,10 +292,12 @@ class Requests {
+     } catch (e: OpenAICompatibleApiException) {
+         Result.failure(e)
+     } catch (e: io.ktor.client.plugins.HttpRequestTimeoutException) {
++        AppLog.error("Provider", "${service.displayName} request timed out", e)
+         Result.failure(OpenAICompatibleConnectionException())
+     } catch (e: CancellationException) {
+         throw e
+     } catch (e: Exception) {
++        AppLog.error("Provider", "${service.displayName} request/decoding failure", e)
+         Result.failure(mapOpenAICompatibleException(e))
+     }
+ 
+@@ -325,13 +325,15 @@ class Requests {
+             header("Accept", "text/event-stream")
+             apiKey?.let { bearerAuth(it) }
+             applySessionHeader(service, credentials, sessionId)
+-            setBody(OpenAICompatibleChatRequestDto(
+-                messages = messages,
+-                model = credentials.modelId.ifEmpty { null },
+-                tools = tools.toRequestTools { it.toRequestTool() },
+-                stream = true,
+-                thinking = OpenAICompatibleChatRequestDto.Thinking(if (thinkingEnabled) "enabled" else "disabled"),
+-            ))
++            setBody(
++                OpenAICompatibleChatRequestDto(
++                    messages = messages,
++                    model = credentials.modelId.ifEmpty { null },
++                    tools = tools.toRequestTools { it.toRequestTool() },
++                    stream = true,
++                    thinking = OpenAICompatibleChatRequestDto.Thinking(if (thinkingEnabled) "enabled" else "disabled"),
++                ),
++            )
+         }.execute { response ->
+             if (!response.status.isSuccess()) {
+                 handleOpenAICompatibleError(service, credentials, response)
+@@ -345,7 +347,10 @@ class Requests {
+                 val payload = raw.lines().filter { it.startsWith("data:") }
+                     .joinToString("\n") { it.removePrefix("data:").trimStart() }
+                 if (payload.isBlank()) return
+-                if (payload == "[DONE]") { receivedDone = true; return }
++                if (payload == "[DONE]") {
++                    receivedDone = true
++                    return
++                }
+                 val obj = Json.parseToJsonElement(payload).jsonObject
+                 if (obj["error"] != null) throw OpenAICompatibleGenericException("DeepSeek streaming error: ${obj["error"]}")
+                 val choice = (obj["choices"] as? JsonArray)?.firstOrNull()?.jsonObject ?: return
+@@ -367,8 +372,11 @@ class Requests {
+             }
+             while (true) {
+                 val line = channel.readUTF8Line() ?: break
+-                if (line.isBlank()) processEvent()
+-                else if (line.startsWith("data:")) event.append(line).append('\n')
++                if (line.isBlank()) {
++                    processEvent()
++                } else if (line.startsWith("data:")) {
++                    event.append(line).append('\n')
++                }
+             }
+             processEvent()
+         }
+@@ -379,20 +387,26 @@ class Requests {
+                 function = OpenAICompatibleChatResponseDto.FunctionCall(call.name, call.args.toString()),
+             )
+         }
+-        Result.success(OpenAICompatibleChatResponseDto(listOf(
+-            OpenAICompatibleChatResponseDto.Choice(
+-                OpenAICompatibleChatResponseDto.Choice.Message(
+-                    role = "assistant", content = content.toString(),
+-                    reasoningContent = reasoning.toString().takeIf { it.isNotBlank() },
+-                    toolCalls = toolCalls.takeIf { it.isNotEmpty() },
++        Result.success(
++            OpenAICompatibleChatResponseDto(
++                listOf(
++                    OpenAICompatibleChatResponseDto.Choice(
++                        OpenAICompatibleChatResponseDto.Choice.Message(
++                            role = "assistant",
++                            content = content.toString(),
++                            reasoningContent = reasoning.toString().takeIf { it.isNotBlank() },
++                            toolCalls = toolCalls.takeIf { it.isNotEmpty() },
++                        ),
++                    ),
+                 ),
+             ),
+-        )))
++        )
+     } catch (e: CancellationException) {
+         throw e
+     } catch (e: OpenAICompatibleApiException) {
+         Result.failure(e)
+     } catch (e: Exception) {
++        AppLog.error("Provider", "${service.displayName} request/decoding failure", e)
+         Result.failure(mapOpenAICompatibleException(e))
+     }
+ 
+@@ -433,10 +447,12 @@ class Requests {
+     } catch (e: OpenAICompatibleApiException) {
+         Result.failure(e)
+     } catch (e: io.ktor.client.plugins.HttpRequestTimeoutException) {
++        AppLog.error("Provider", "${service.displayName} request timed out", e)
+         Result.failure(OpenAICompatibleConnectionException())
+     } catch (e: CancellationException) {
+         throw e
+     } catch (e: Exception) {
++        AppLog.error("Provider", "${service.displayName} request/decoding failure", e)
+         Result.failure(mapOpenAICompatibleException(e))
+     }
+ 
+@@ -539,6 +555,7 @@ class Requests {
+             val dto = anthropicJson.decodeFromString(AnthropicModelsResponseDto.serializer(), responseBody)
+             Result.success(dto)
+         } else {
++            AppLog.error("Provider", "Anthropic HTTP ${response.status.value} error body: ${responseBody.take(8_000)}")
+             throwAnthropicError(response.status.value, responseBody)
+         }
+     } catch (e: AnthropicApiException) {
+@@ -578,6 +595,7 @@ class Requests {
+             val dto = anthropicJson.decodeFromString(AnthropicChatResponseDto.serializer(), responseBody)
+             Result.success(dto)
+         } else {
++            AppLog.error("Provider", "Anthropic HTTP ${response.status.value} error body: ${responseBody.take(8_000)}")
+             throwAnthropicError(response.status.value, responseBody)
+         }
+     } catch (e: AnthropicApiException) {
+@@ -637,6 +655,7 @@ class Requests {
+         response: HttpResponse,
+     ): Nothing {
+         val responseBody = response.bodyAsText()
++        AppLog.error("Provider", "${service.displayName}/${credentials.modelId} HTTP ${response.status.value} error body: ${responseBody.take(8_000)}")
+         val parsed = parseOpenAICompatibleErrorDetail(responseBody)
+         val moderationDetail = parsed.moderationDetail()
+         when (response.status.value) {
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/chat/ChatScreen.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/chat/ChatScreen.kt
+index 756d87e..e1af850 100644
+--- a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/chat/ChatScreen.kt
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/chat/ChatScreen.kt
+@@ -510,6 +510,10 @@ private fun ChatModeScreen(
+         mutableStateOf(TextFieldValue(""))
+     }
+     val keyboardController = LocalSoftwareKeyboardController.current
++    com.inspiredandroid.kai.PlatformBackHandler(enabled = isSandboxOpen) {
++        keyboardController?.hide()
++        isSandboxOpen = false
++    }
+     val snackbarHostState = remember { SnackbarHostState() }
+ 
+     LaunchedEffect(uiState.composerPrefill) {
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/CodeFenceBlock.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/CodeFenceBlock.kt
+index 6d51422..de4b1ba 100644
+--- a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/CodeFenceBlock.kt
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/CodeFenceBlock.kt
+@@ -71,9 +71,10 @@ internal fun CodeFenceBlock(
+             }
+             HorizontalDivider(color = colorScheme.outline.copy(alpha = 0.2f))
+             val scroll = rememberScrollState()
+-            Box(Modifier.horizontalScroll(scroll).padding(12.dp)) {
++            Box(Modifier.fillMaxWidth().horizontalScroll(scroll).padding(12.dp)) {
+                 Text(
+                     text = highlighted,
++                    softWrap = false,
+                     fontFamily = FontFamily.Monospace,
+                     style = MaterialTheme.typography.bodyMedium,
+                 )
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/InlineContent.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/InlineContent.kt
+index bb72546..cc07ec6 100644
+--- a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/InlineContent.kt
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/InlineContent.kt
+@@ -3,6 +3,7 @@ package com.inspiredandroid.kai.ui.markdown
+ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.ExperimentalLayoutApi
+ import androidx.compose.foundation.layout.FlowRow
++import androidx.compose.foundation.layout.Row
+ import androidx.compose.material3.Text
+ import androidx.compose.runtime.Composable
+ import androidx.compose.runtime.remember
+@@ -28,38 +29,44 @@ internal fun InlineContent(
+     style: TextStyle,
+     modifier: Modifier = Modifier,
+     textAlign: TextAlign = TextAlign.Unspecified,
++    softWrap: Boolean = true,
+ ) {
+     if (!containsMath(inlines)) {
+         Text(
+             text = inlines.toAnnotatedString(),
+             style = style,
+             textAlign = textAlign,
++            softWrap = softWrap,
+             modifier = modifier,
+         )
+         return
+     }
+ 
+     val segments = remember(inlines) { splitAroundMath(inlines) }
+-    FlowRow(
+-        modifier = modifier,
+-        horizontalArrangement = Arrangement.Start,
+-        verticalArrangement = Arrangement.Center,
+-        // Top-align keeps adjacent text anchored when a math child (e.g. a fraction) is tall,
+-        // which in turn keeps list-bullets aligned with their first line of content.
+-        itemVerticalAlignment = Alignment.Top,
+-    ) {
++    val content: @Composable () -> Unit = {
+         for (seg in segments) {
+             when (seg) {
+                 is InlineSegment.TextRun -> Text(
+                     text = seg.nodes.toAnnotatedString().flattenNewlines(),
+                     style = style,
+                     textAlign = textAlign,
++                    softWrap = softWrap,
+                 )
+ 
+                 is InlineSegment.Math -> MathFormula(latex = seg.latex, display = false)
+             }
+         }
+     }
++    if (softWrap) {
++        FlowRow(
++            modifier = modifier,
++            horizontalArrangement = Arrangement.Start,
++            verticalArrangement = Arrangement.Center,
++            itemVerticalAlignment = Alignment.Top,
++        ) { content() }
++    } else {
++        Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) { content() }
++    }
+ }
+ 
+ /** `\n` inside a FlowRow TextRun forces a hard break that breaks flow around math; flatten to spaces. */
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/MarkdownRenderer.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/MarkdownRenderer.kt
+index 1da8f42..cab0c50 100644
+--- a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/MarkdownRenderer.kt
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/MarkdownRenderer.kt
+@@ -21,9 +21,12 @@ import androidx.compose.runtime.CompositionLocalProvider
+ import androidx.compose.runtime.remember
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
++import androidx.compose.ui.layout.Layout
+ import androidx.compose.ui.platform.LocalDensity
+ import androidx.compose.ui.text.font.FontWeight
+ import androidx.compose.ui.text.style.TextAlign
++import androidx.compose.ui.unit.Constraints
++import androidx.compose.ui.unit.constrainWidth
+ import androidx.compose.ui.unit.dp
+ import coil3.compose.AsyncImage
+ import com.inspiredandroid.kai.ui.dynamicui.FrozenSubmission
+@@ -247,29 +250,62 @@ private fun ListItemRow(
+ 
+ @Composable
+ private fun TableBlock(block: Table) {
+-    Column(Modifier.padding(vertical = 4.dp)) {
+-        if (block.headers.any { it.isNotEmpty() }) {
+-            Row {
+-                block.headers.forEachIndexed { i, cell ->
++    val hasHeader = block.headers.any { it.isNotEmpty() }
++    val rows = (if (hasHeader) listOf(block.headers) else emptyList()) + block.rows
++    val columnCount = maxOf(block.headers.size, block.alignments.size, rows.maxOfOrNull { it.size } ?: 0)
++    if (columnCount == 0 || rows.isEmpty()) return
++
++    // Measure each column against all of its cells, then scroll the whole grid.
++    // Each row uses the same column widths and its tallest cell's height, including
++    // explicit line breaks. Wide cells never squeeze the rest of the table.
++    Layout(
++        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
++            .horizontalScroll(rememberScrollState()),
++        content = {
++            rows.forEachIndexed { rowIndex, row ->
++                repeat(columnCount) { column ->
+                     InlineContent(
+-                        inlines = cell,
+-                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+-                        textAlign = alignTextFor(block.alignments.getOrNull(i)),
+-                        modifier = Modifier.weight(1f).padding(4.dp),
++                        inlines = row.getOrNull(column) ?: persistentListOf(),
++                        style = if (hasHeader && rowIndex == 0) {
++                            MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
++                        } else {
++                            MaterialTheme.typography.bodyLarge
++                        },
++                        textAlign = alignTextFor(block.alignments.getOrNull(column)),
++                        softWrap = false,
++                        modifier = Modifier.padding(8.dp),
+                     )
+                 }
+             }
+-            HorizontalDivider()
++            if (hasHeader) HorizontalDivider()
++        },
++    ) { measurables, constraints ->
++        val cells = measurables.take(rows.size * columnCount)
++        val widths = IntArray(columnCount) { column ->
++            rows.indices.maxOf { row ->
++                cells[row * columnCount + column].maxIntrinsicWidth(Constraints.Infinity)
++            }.coerceAtLeast(40.dp.roundToPx())
+         }
+-        for (row in block.rows) {
+-            Row {
+-                row.forEachIndexed { i, cell ->
+-                    InlineContent(
+-                        inlines = cell,
+-                        style = MaterialTheme.typography.bodyLarge,
+-                        textAlign = alignTextFor(block.alignments.getOrNull(i)),
+-                        modifier = Modifier.weight(1f).padding(4.dp),
+-                    )
++        val placeables = cells.mapIndexed { index, cell ->
++            cell.measure(Constraints.fixedWidth(widths[index % columnCount]))
++        }
++        val heights = IntArray(rows.size) { row ->
++            (0 until columnCount).maxOf { column -> placeables[row * columnCount + column].height }
++        }
++        val width = constraints.constrainWidth(widths.sum())
++        val divider = if (hasHeader) measurables.last().measure(Constraints.fixedWidth(width)) else null
++        layout(width, heights.sum() + (divider?.height ?: 0)) {
++            var y = 0
++            rows.indices.forEach { row ->
++                var x = 0
++                repeat(columnCount) { column ->
++                    placeables[row * columnCount + column].placeRelative(x, y)
++                    x += widths[column]
++                }
++                y += heights[row]
++                if (row == 0 && divider != null) {
++                    divider.placeRelative(0, y)
++                    y += divider.height
+                 }
+             }
+         }
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/LogsContent.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/LogsContent.kt
+new file mode 100644
+index 0000000..aff323f
+--- /dev/null
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/LogsContent.kt
+@@ -0,0 +1,40 @@
++package com.inspiredandroid.kai.ui.settings
++
++import androidx.compose.foundation.horizontalScroll
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.rememberScrollState
++import androidx.compose.foundation.text.selection.SelectionContainer
++import androidx.compose.foundation.verticalScroll
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Surface
++import androidx.compose.material3.Text
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.text.font.FontFamily
++import androidx.compose.ui.unit.dp
++import androidx.lifecycle.compose.collectAsStateWithLifecycle
++import com.inspiredandroid.kai.diagnostics.AppLog
++import kai.composeapp.generated.resources.Res
++import kai.composeapp.generated.resources.settings_logs_empty
++import org.jetbrains.compose.resources.stringResource
++
++/** A single selectable log box, without filters or other settings. */
++@Composable
++internal fun LogsContent(modifier: Modifier = Modifier) {
++    val text by AppLog.text.collectAsStateWithLifecycle()
++    Surface(modifier = modifier, color = MaterialTheme.colorScheme.surfaceContainer) {
++        SelectionContainer(
++            Modifier.fillMaxSize().verticalScroll(rememberScrollState())
++                .horizontalScroll(rememberScrollState()).padding(12.dp),
++        ) {
++            Text(
++                text = text.ifBlank { stringResource(Res.string.settings_logs_empty) },
++                fontFamily = FontFamily.Monospace,
++                style = MaterialTheme.typography.bodySmall,
++                softWrap = false,
++            )
++        }
++    }
++}
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/SettingsScreen.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/SettingsScreen.kt
+index 3e8f96f..d06c090 100644
+--- a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/SettingsScreen.kt
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/SettingsScreen.kt
+@@ -72,10 +72,9 @@ import androidx.compose.ui.unit.dp
+ import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import com.inspiredandroid.kai.BackIcon
+ import com.inspiredandroid.kai.Version
++import com.inspiredandroid.kai.data.AppSettings
+ import com.inspiredandroid.kai.data.EmailAccount
+ import com.inspiredandroid.kai.data.Service
+-import com.inspiredandroid.kai.data.AppSettings
+-import org.koin.compose.koinInject
+ import com.inspiredandroid.kai.linux.LinuxDistro
+ import com.inspiredandroid.kai.ui.components.VerticalScrollbarForScroll
+ import com.inspiredandroid.kai.ui.handCursor
+@@ -90,6 +89,7 @@ import kai.composeapp.generated.resources.settings_licenses_close
+ import kai.composeapp.generated.resources.settings_tab_agent
+ import kai.composeapp.generated.resources.settings_tab_general
+ import kai.composeapp.generated.resources.settings_tab_integrations
++import kai.composeapp.generated.resources.settings_tab_logs
+ import kai.composeapp.generated.resources.settings_tab_sandbox
+ import kai.composeapp.generated.resources.settings_tab_services
+ import kai.composeapp.generated.resources.settings_tab_tools
+@@ -105,6 +105,7 @@ import kotlinx.collections.immutable.ImmutableList
+ import kotlinx.collections.immutable.toImmutableList
+ import org.jetbrains.compose.resources.painterResource
+ import org.jetbrains.compose.resources.stringResource
++import org.koin.compose.koinInject
+ import org.koin.compose.viewmodel.koinViewModel
+ 
+ internal val StatusColorConnected = Color(0xFF4CAF50)
+@@ -251,95 +252,103 @@ fun SettingsScreenContent(
+ 
+             val settingsScrollState = rememberScrollState()
+             Box(Modifier.weight(1f).fillMaxWidth()) {
+-                Column(
+-                    Modifier.fillMaxWidth().verticalScroll(settingsScrollState),
+-                    horizontalAlignment = CenterHorizontally,
+-                ) {
+-                    Spacer(Modifier.height(16.dp))
+-
+-                    val maxContentWidth = when (filteredUiState.currentTab) {
+-                        SettingsTab.Services -> 500.dp
+-                        else -> 900.dp
+-                    }
++                if (filteredUiState.currentTab == SettingsTab.Logs) {
++                    LogsContent(Modifier.fillMaxSize().padding(16.dp))
++                } else {
+                     Column(
+-                        Modifier.widthIn(max = maxContentWidth).fillMaxWidth().padding(horizontal = 16.dp),
++                        Modifier.fillMaxWidth().verticalScroll(settingsScrollState),
+                         horizontalAlignment = CenterHorizontally,
+                     ) {
+-                        when (filteredUiState.currentTab) {
+-                            SettingsTab.General -> {
+-                                GeneralContent(uiState = filteredUiState, actions = actions)
+-                            }
+-
+-                            SettingsTab.Appearance -> {
+-                                AppearanceEditor()
+-                            }
+-
+-                            SettingsTab.Agent -> {
+-                                AgentContent(uiState = filteredUiState, actions = actions)
+-                            }
+-
+-                            SettingsTab.Services -> {
+-                                ServicesContent(uiState = filteredUiState, actions = actions)
+-                            }
+-
+-                            SettingsTab.Integrations -> {
+-                                IntegrationsContent()
+-                            }
++                        Spacer(Modifier.height(16.dp))
+ 
+-                            SettingsTab.Tools -> {
+-                                ToolsContent(
+-                                    tools = filteredUiState.tools,
+-                                    onToggleTool = actions.onToggleTool,
+-                                    mcpServers = filteredUiState.mcpServers,
+-                                    onAddMcpServer = actions.onAddMcpServer,
+-                                    onRemoveMcpServer = actions.onRemoveMcpServer,
+-                                    onToggleMcpServer = actions.onToggleMcpServer,
+-                                    onRefreshMcpServer = actions.onRefreshMcpServer,
+-                                    showAddMcpServerDialog = filteredUiState.showAddMcpServerDialog,
+-                                    onShowAddMcpServerDialog = actions.onShowAddMcpServerDialog,
+-                                    onAddPopularMcpServer = actions.onAddPopularMcpServer,
+-                                    skills = filteredUiState.skills,
+-                                    onUninstallSkill = actions.onUninstallSkill,
+-                                    showAddSkillDialog = filteredUiState.showAddSkillDialog,
+-                                    onShowAddSkillDialog = actions.onShowAddSkillDialog,
+-                                    onInstallGitHubSkill = actions.onInstallGitHubSkill,
+-                                    onInstallBrowsedSkill = actions.onInstallBrowsedSkill,
+-                                    isInstallingSkill = filteredUiState.isInstallingSkill,
+-                                    skillInstallError = filteredUiState.skillInstallError,
+-                                    browsableSkills = filteredUiState.browsableSkills,
+-                                    isBrowsingSkills = filteredUiState.isBrowsingSkills,
+-                                    browseSkillsFailed = filteredUiState.browseSkillsFailed,
+-                                    showSkills = sandboxState.showSandbox,
+-                                    isSandboxInstalled = sandboxState.sandboxInstalled,
+-                                    onNavigateToSandbox = { actions.onSelectTab(SettingsTab.Sandbox) },
+-                                )
++                        val maxContentWidth = when (filteredUiState.currentTab) {
++                            SettingsTab.Services -> 500.dp
++                            else -> 900.dp
++                        }
++                        Column(
++                            Modifier.widthIn(max = maxContentWidth).fillMaxWidth().padding(horizontal = 16.dp),
++                            horizontalAlignment = CenterHorizontally,
++                        ) {
++                            when (filteredUiState.currentTab) {
++                                SettingsTab.Logs -> Unit
++
++                                // Rendered in the bounded box above.
++
++                                SettingsTab.General -> {
++                                    GeneralContent(uiState = filteredUiState, actions = actions)
++                                }
++
++                                SettingsTab.Appearance -> {
++                                    AppearanceEditor()
++                                }
++
++                                SettingsTab.Agent -> {
++                                    AgentContent(uiState = filteredUiState, actions = actions)
++                                }
++
++                                SettingsTab.Services -> {
++                                    ServicesContent(uiState = filteredUiState, actions = actions)
++                                }
++
++                                SettingsTab.Integrations -> {
++                                    IntegrationsContent()
++                                }
++
++                                SettingsTab.Tools -> {
++                                    ToolsContent(
++                                        tools = filteredUiState.tools,
++                                        onToggleTool = actions.onToggleTool,
++                                        mcpServers = filteredUiState.mcpServers,
++                                        onAddMcpServer = actions.onAddMcpServer,
++                                        onRemoveMcpServer = actions.onRemoveMcpServer,
++                                        onToggleMcpServer = actions.onToggleMcpServer,
++                                        onRefreshMcpServer = actions.onRefreshMcpServer,
++                                        showAddMcpServerDialog = filteredUiState.showAddMcpServerDialog,
++                                        onShowAddMcpServerDialog = actions.onShowAddMcpServerDialog,
++                                        onAddPopularMcpServer = actions.onAddPopularMcpServer,
++                                        skills = filteredUiState.skills,
++                                        onUninstallSkill = actions.onUninstallSkill,
++                                        showAddSkillDialog = filteredUiState.showAddSkillDialog,
++                                        onShowAddSkillDialog = actions.onShowAddSkillDialog,
++                                        onInstallGitHubSkill = actions.onInstallGitHubSkill,
++                                        onInstallBrowsedSkill = actions.onInstallBrowsedSkill,
++                                        isInstallingSkill = filteredUiState.isInstallingSkill,
++                                        skillInstallError = filteredUiState.skillInstallError,
++                                        browsableSkills = filteredUiState.browsableSkills,
++                                        isBrowsingSkills = filteredUiState.isBrowsingSkills,
++                                        browseSkillsFailed = filteredUiState.browseSkillsFailed,
++                                        showSkills = sandboxState.showSandbox,
++                                        isSandboxInstalled = sandboxState.sandboxInstalled,
++                                        onNavigateToSandbox = { actions.onSelectTab(SettingsTab.Sandbox) },
++                                    )
++                                }
++
++                                SettingsTab.Sandbox -> {
++                                    SandboxSettingsCard(
++                                        sandboxState = sandboxState,
++                                        onToggleSandbox = onToggleSandbox,
++                                        onSelectDistro = onSelectDistro,
++                                        onSetupSandbox = onSetupSandbox,
++                                        onCancelSandbox = onCancelSandbox,
++                                        onResetSandbox = onResetSandbox,
++                                        onInstallPackages = onInstallPackages,
++                                        onMigrateHome = onMigrateHome,
++                                    )
++                                }
+                             }
+ 
+-                            SettingsTab.Sandbox -> {
+-                                SandboxSettingsCard(
+-                                    sandboxState = sandboxState,
+-                                    onToggleSandbox = onToggleSandbox,
+-                                    onSelectDistro = onSelectDistro,
+-                                    onSetupSandbox = onSetupSandbox,
+-                                    onCancelSandbox = onCancelSandbox,
+-                                    onResetSandbox = onResetSandbox,
+-                                    onInstallPackages = onInstallPackages,
+-                                    onMigrateHome = onMigrateHome,
+-                                )
+-                            }
++                            Spacer(Modifier.height(16.dp))
+                         }
+ 
+-                        Spacer(Modifier.height(16.dp))
+-                    }
+-
+-                    Spacer(Modifier.weight(1f))
++                        Spacer(Modifier.weight(1f))
+ 
+-                    BottomInfo()
++                        BottomInfo()
++                    }
++                    VerticalScrollbarForScroll(
++                        scrollState = settingsScrollState,
++                        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
++                    )
+                 }
+-                VerticalScrollbarForScroll(
+-                    scrollState = settingsScrollState,
+-                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
+-                )
+             }
+         }
+         SnackbarHost(
+@@ -422,6 +431,7 @@ private fun SettingsTabSelector(
+                 ) {
+                     Text(
+                         text = when (tab) {
++                            SettingsTab.Logs -> stringResource(Res.string.settings_tab_logs)
+                             SettingsTab.General -> stringResource(Res.string.settings_tab_general)
+                             SettingsTab.Appearance -> "Appearance"
+                             SettingsTab.Agent -> stringResource(Res.string.settings_tab_agent)
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/SettingsUiState.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/SettingsUiState.kt
+index cde6128..a419763 100644
+--- a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/SettingsUiState.kt
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/SettingsUiState.kt
+@@ -59,6 +59,7 @@ enum class SettingsTab {
+     Tools,
+     Sandbox,
+     Integrations,
++    Logs,
+ }
+ 
+ @Immutable
+diff --git a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/TerminalSheet.kt b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/TerminalSheet.kt
+index a59b633..1d996ea 100644
+--- a/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/TerminalSheet.kt
++++ b/composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/TerminalSheet.kt
+@@ -5,9 +5,13 @@ package com.inspiredandroid.kai.ui.settings
+ import androidx.compose.foundation.background
+ import androidx.compose.foundation.gestures.awaitEachGesture
+ import androidx.compose.foundation.gestures.awaitFirstDown
++import androidx.compose.foundation.horizontalScroll
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.BoxWithConstraints
+ import androidx.compose.foundation.layout.Column
+ import androidx.compose.foundation.layout.Row
+ import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxHeight
+ import androidx.compose.foundation.layout.fillMaxSize
+ import androidx.compose.foundation.layout.fillMaxWidth
+ import androidx.compose.foundation.layout.height
+@@ -19,6 +23,7 @@ import androidx.compose.foundation.layout.width
+ import androidx.compose.foundation.lazy.LazyColumn
+ import androidx.compose.foundation.lazy.items
+ import androidx.compose.foundation.lazy.rememberLazyListState
++import androidx.compose.foundation.rememberScrollState
+ import androidx.compose.foundation.text.KeyboardActions
+ import androidx.compose.foundation.text.KeyboardOptions
+ import androidx.compose.foundation.text.selection.SelectionContainer
+@@ -48,9 +53,11 @@ import androidx.compose.ui.focus.FocusRequester
+ import androidx.compose.ui.focus.focusRequester
+ import androidx.compose.ui.graphics.Color
+ import androidx.compose.ui.input.pointer.pointerInput
++import androidx.compose.ui.platform.LocalDensity
+ import androidx.compose.ui.text.TextStyle
+ import androidx.compose.ui.text.font.FontFamily
+ import androidx.compose.ui.text.input.ImeAction
++import androidx.compose.ui.text.rememberTextMeasurer
+ import androidx.compose.ui.unit.TextUnit
+ import androidx.compose.ui.unit.dp
+ import androidx.compose.ui.unit.sp
+@@ -170,6 +177,20 @@ fun TerminalContent(
+     // Appends to the end are safe because they don't invalidate existing ids.
+     val isInteractingWithOutput = remember { mutableStateOf(false) }
+ 
++    val horizontalScroll = androidx.compose.runtime.key(selectedSessionId) { rememberScrollState() }
++    val textMeasurer = rememberTextMeasurer(cacheSize = MAX_OUTPUT_LINES * 2)
++    val density = LocalDensity.current
++    val transcript = outputLines.toList()
++    val outputWidthPx = remember(transcript, textMeasurer, density) {
++        transcript.maxOfOrNull { line ->
++            val text = when (line) {
++                is TerminalLine.Command -> "$ ${line.text}"
++                is TerminalLine.Output -> parseAnsiToAnnotatedString(line.text, Color.Unspecified).text
++                is TerminalLine.Error -> parseAnsiToAnnotatedString(line.text, Color.Unspecified).text
++            }
++            textMeasurer.measure(text, style = monoStyle(13.sp), softWrap = false).size.width
++        } ?: 0
++    }
+     val colors = terminalColors(darkBackground)
+     // Which Linux the user is actually typing into — the header used to say
+     // "Alpine Linux" unconditionally.
+@@ -297,56 +318,65 @@ fun TerminalContent(
+                     }
+                 },
+         ) {
+-            LazyColumn(
+-                modifier = Modifier
+-                    .fillMaxSize()
+-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+-                state = listState,
+-            ) {
+-                if (outputLines.isEmpty()) {
+-                    item {
+-                        Text(
+-                            text = stringResource(Res.string.terminal_help_text),
+-                            style = monoStyle(13.sp, colors.dimText),
+-                        )
+-                    }
+-                }
+-                items(
+-                    items = outputLines,
+-                    contentType = { it::class },
+-                ) { line ->
+-                    when (line) {
+-                        is TerminalLine.Command -> {
+-                            Spacer(Modifier.height(4.dp))
+-                            Text(
+-                                text = "$ ${line.text}",
+-                                style = monoStyle(13.sp, colors.prompt),
+-                            )
++            BoxWithConstraints(Modifier.fillMaxSize()) {
++                val outputWidth = maxOf(maxWidth, with(density) { outputWidthPx.toDp() } + 32.dp)
++                Box(Modifier.fillMaxSize().horizontalScroll(horizontalScroll)) {
++                    LazyColumn(
++                        modifier = Modifier
++                            .width(outputWidth)
++                            .fillMaxHeight()
++                            .padding(horizontal = 16.dp, vertical = 12.dp),
++                        state = listState,
++                    ) {
++                        if (outputLines.isEmpty()) {
++                            item {
++                                Text(
++                                    text = stringResource(Res.string.terminal_help_text),
++                                    style = monoStyle(13.sp, colors.dimText),
++                                )
++                            }
+                         }
++                        items(
++                            items = outputLines,
++                            contentType = { it::class },
++                        ) { line ->
++                            when (line) {
++                                is TerminalLine.Command -> {
++                                    Spacer(Modifier.height(4.dp))
++                                    Text(
++                                        text = "$ ${line.text}",
++                                        style = monoStyle(13.sp, colors.prompt),
++                                        softWrap = false,
++                                    )
++                                }
+ 
+-                        is TerminalLine.Output -> {
+-                            Text(
+-                                text = parseAnsiToAnnotatedString(line.text, colors.text),
+-                                style = monoStyle(13.sp),
+-                            )
+-                        }
++                                is TerminalLine.Output -> {
++                                    Text(
++                                        text = parseAnsiToAnnotatedString(line.text, colors.text),
++                                        style = monoStyle(13.sp),
++                                        softWrap = false,
++                                    )
++                                }
+ 
+-                        is TerminalLine.Error -> {
+-                            Text(
+-                                text = parseAnsiToAnnotatedString(line.text, colors.error),
+-                                style = monoStyle(13.sp),
+-                            )
++                                is TerminalLine.Error -> {
++                                    Text(
++                                        text = parseAnsiToAnnotatedString(line.text, colors.error),
++                                        style = monoStyle(13.sp),
++                                        softWrap = false,
++                                    )
++                                }
++                            }
++                        }
++                        if (isRunning) {
++                            item {
++                                Spacer(Modifier.height(4.dp))
++                                CircularProgressIndicator(
++                                    modifier = Modifier.size(14.dp),
++                                    strokeWidth = 2.dp,
++                                    color = colors.prompt,
++                                )
++                            }
+                         }
+-                    }
+-                }
+-                if (isRunning) {
+-                    item {
+-                        Spacer(Modifier.height(4.dp))
+-                        CircularProgressIndicator(
+-                            modifier = Modifier.size(14.dp),
+-                            strokeWidth = 2.dp,
+-                            color = colors.prompt,
+-                        )
+                     }
+                 }
+             }
+diff --git a/composeApp/src/commonTest/kotlin/com/inspiredandroid/kai/diagnostics/AppLogTest.kt b/composeApp/src/commonTest/kotlin/com/inspiredandroid/kai/diagnostics/AppLogTest.kt
+new file mode 100644
+index 0000000..e115ad7
+--- /dev/null
++++ b/composeApp/src/commonTest/kotlin/com/inspiredandroid/kai/diagnostics/AppLogTest.kt
+@@ -0,0 +1,65 @@
++package com.inspiredandroid.kai.diagnostics
++
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.coroutineScope
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.test.runTest
++import kotlin.test.BeforeTest
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFalse
++import kotlin.test.assertTrue
++
++class AppLogTest {
++    @BeforeTest
++    fun reset() = AppLog.restore("")
++
++    @Test
++    fun preservesProviderFailureDetailsAndRedactsCredentials() {
++        AppLog.registerSecret("configured-test-secret")
++        AppLog.error("Provider", "Free/fast HTTP 429; retry-after=30; upstream=Groq; configured-test-secret", IllegalStateException("quota exhausted"))
++        val log = AppLog.text.value
++        assertTrue(log.contains("Free/fast HTTP 429"))
++        assertTrue(log.contains("retry-after=30"))
++        assertTrue(log.contains("upstream=Groq"))
++        assertTrue(log.contains("IllegalStateException: quota exhausted"))
++        assertFalse(log.contains("configured-test-secret"))
++    }
++
++    @Test
++    fun redactsHeadersJsonAndUrlCredentials() {
++        val log = AppLog.redact("""Bearer bearer-secret {"api_key":"json-secret","password":"pass-secret"} https://user:pass@example.com/api?key=query-secret&token=token-secret""")
++        listOf("bearer-secret", "json-secret", "pass-secret", "user:pass", "query-secret", "token-secret").forEach {
++            assertFalse(log.contains(it), "Leaked $it")
++        }
++        assertTrue(log.contains("example.com/api"))
++    }
++
++    @Test
++    fun boundsTheBufferAndKeepsNewestEntries() {
++        repeat(100) { AppLog.info("Test", "x".repeat(4_000)) }
++        AppLog.info("Test", "newest-entry")
++        assertTrue(AppLog.text.value.length <= AppLog.MAX_CHARS)
++        assertTrue(AppLog.text.value.endsWith("newest-entry\n"))
++    }
++
++    @Test
++    fun concurrentWritersDoNotLoseEntries() = runTest {
++        coroutineScope {
++            repeat(100) { id -> launch(Dispatchers.Default) { AppLog.info("Test", "entry-$id") } }
++        }
++        val entries = AppLog.text.value.lineSequence().filter { it.isNotBlank() }.toList()
++        assertEquals(100, entries.size)
++        assertEquals(100, entries.toSet().size)
++    }
++
++    @Test
++    fun restoreKeepsPreviousSessionAndBoundsOversizedFiles() {
++        AppLog.restore("previous-session\n")
++        AppLog.info("App", "new-session")
++        assertTrue(AppLog.text.value.startsWith("previous-session\n"))
++        assertTrue(AppLog.text.value.contains("new-session"))
++        AppLog.restore("old\n".repeat(AppLog.MAX_CHARS))
++        assertTrue(AppLog.text.value.length <= AppLog.MAX_CHARS)
++    }
++}
+diff --git a/composeApp/src/commonTest/kotlin/com/inspiredandroid/kai/network/DiagnosticLoggingTest.kt b/composeApp/src/commonTest/kotlin/com/inspiredandroid/kai/network/DiagnosticLoggingTest.kt
+new file mode 100644
+index 0000000..e29e2d5
+--- /dev/null
++++ b/composeApp/src/commonTest/kotlin/com/inspiredandroid/kai/network/DiagnosticLoggingTest.kt
+@@ -0,0 +1,54 @@
++package com.inspiredandroid.kai.network
++
++import com.inspiredandroid.kai.diagnostics.AppLog
++import io.ktor.client.HttpClient
++import io.ktor.client.engine.mock.MockEngine
++import io.ktor.client.engine.mock.respond
++import io.ktor.client.request.bearerAuth
++import io.ktor.client.request.get
++import io.ktor.client.statement.bodyAsText
++import io.ktor.http.HttpStatusCode
++import io.ktor.http.headersOf
++import kotlinx.coroutines.test.runTest
++import kotlin.test.Test
++import kotlin.test.assertEquals
++import kotlin.test.assertFalse
++import kotlin.test.assertTrue
++
++class DiagnosticLoggingTest {
++    @Test
++    fun logsHttpFailureMetadataWithoutConsumingBodyOrExposingCredentials() = runTest {
++        AppLog.restore("")
++        val body = """{"error":"All free providers failed"}"""
++        val client = HttpClient(MockEngine { respond(body, HttpStatusCode.TooManyRequests, headersOf("retry-after", "30")) }) {
++            install(DiagnosticLogging)
++        }
++        try {
++            val response = client.get("https://example.com/chat/completions?api_key=query-secret") {
++                bearerAuth("header-secret")
++            }
++            assertEquals(body, response.bodyAsText())
++            val log = AppLog.text.value
++            assertTrue(log.contains("HTTP 429"))
++            assertTrue(log.contains("retry-after=30"))
++            assertFalse(log.contains("query-secret"))
++            assertFalse(log.contains("header-secret"))
++        } finally {
++            client.close()
++        }
++    }
++
++    @Test
++    fun successfulBodyRemainsReadableAndIsNotLogged() = runTest {
++        AppLog.restore("")
++        val body = "private-successful-answer"
++        val client = HttpClient(MockEngine { respond(body) }) { install(DiagnosticLogging) }
++        try {
++            assertEquals(body, client.get("https://example.com/chat/completions").bodyAsText())
++            assertTrue(AppLog.text.value.contains("HTTP 200"))
++            assertFalse(AppLog.text.value.contains(body))
++        } finally {
++            client.close()
++        }
++    }
++}
+diff --git a/docs/features/chat.md b/docs/features/chat.md
+index a820c1a..f23e82b 100644
+--- a/docs/features/chat.md
++++ b/docs/features/chat.md
+@@ -1,9 +1,13 @@
+ # Chat & Conversations
+ 
+-**Last verified:** 2026-10-02
++**Last verified:** 2026-11-14
+ 
+ Kai's chat system manages the message history, conversation persistence, file attachments, and speech output. Conversations are service-independent — switching providers does not affect which conversation is loaded or restored. Multiple conversations are persisted and browsable via a history sheet.
+ 
++## Wide content
++
++Normal prose wraps to the chat width. Fenced code preserves indentation and explicit newlines, with a horizontal swipe for long lines. Markdown tables share content-sized column widths across every row and scroll horizontally as a whole; cells only break at explicit newlines. This also applies inside lists and quotations.
++
+ ## Concepts
+ 
+ ### Conversation
+@@ -146,3 +150,6 @@ Multiple files can be attached to a single prompt. Each file is added one at a t
+ | `composeApp/src/commonMain/.../ui/chat/composables/QuestionInput.kt` | Text input with send/stop button |
+ | `androidApp/src/main/AndroidManifest.xml` | Share-sheet registration for plain text (`ACTION_SEND`) |
+ | `androidApp/src/main/kotlin/.../MainActivity.kt` | Reads shared text from `ACTION_SEND` and hands it to chat |
++| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/MarkdownRenderer.kt` | Content-sized table columns with shared horizontal scrolling. |
++| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/CodeFenceBlock.kt` | Non-wrapping, horizontally scrollable fenced code. |
++| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/InlineContent.kt` | Inline rendering with wrapping enabled for prose and disabled for table cells. |
+diff --git a/docs/features/multi-service.md b/docs/features/multi-service.md
+index acb40fc..78792fb 100644
+--- a/docs/features/multi-service.md
++++ b/docs/features/multi-service.md
+@@ -1,6 +1,6 @@
+ # Multi-Service
+ 
+-**Last verified:** 2026-10-02
++**Last verified:** 2026-11-14
+ 
+ Kai supports 31 LLM providers (plus a built-in Free tier). Each provider uses one of three API formats: **OpenAI-compatible** (most services), **Gemini native**, or **Anthropic native** -- plus **LiteRT on-device** for local inference. A handful of OpenAI models additionally require OpenAI's **Responses API**; Kai switches to it per model, transparently. Users can configure multiple service instances, reorder them, and Kai automatically falls back through the chain on failure.
+ 
+@@ -32,6 +32,14 @@ A built-in service that requires no API key. Free is never shown in the service
+ 
+ When Free is the only path and the user hits Free FAST/EXPERT rate or quota limits, chat shows a free-provider signup panel (Groq, Cerebras, Gemini, OpenRouter, Ollama Cloud) so they can open an API-key page and continue with a personal free tier. See [chat.md](chat.md).
+ 
++## Diagnostics
++
++Settings → Logs is a single selectable, scrollable text box available in release builds. It shows timestamped request metadata, HTTP statuses and timing, provider error bodies, retry delays, context skips, fallback attempts, completion, and exhaustion. Free FAST and EXPERT are identified by their mode. Transport and decoding failures retain their underlying exception details. This adds observability without changing routing, retry policy, or provider configuration.
++
++Free requests go through a remote gateway: logs can show only the upstream failure details that gateway returns. Internal provider failures hidden by the gateway cannot be reconstructed on the phone.
++
++Recent diagnostics are capped at roughly 256,000 characters and saved in private app storage across restarts, outside Android backup. Lifecycle events, tool execution status, shell command status, and uncaught crashes are included. Chat payloads, successful response bodies, shell commands, and tool arguments are omitted. Configured API keys, authorization values, and credential-like query values are redacted. The HTTP observer does not consume response bodies or disturb streaming.
++
+ ## Fallback Chain
+ 
+ 1. Configured instances are tried in the order the user arranged them
+@@ -198,3 +206,7 @@ Users manage services through the settings screen:
+ | `composeApp/src/commonMain/.../ui/chat/ChatScreen.kt` | Chat screen, renders ServiceSelector |
+ | `composeApp/src/commonMain/.../ui/chat/composables/ServiceSelector.kt` | Compact service toggle dropdown |
+ | `composeApp/src/commonMain/.../ui/chat/ChatViewModel.kt` | Wires service selection and reordering |
++| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/diagnostics/AppLog.kt` | Bounded, observable, redacted diagnostic buffer. |
++| `composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/diagnostics/AndroidAppLog.kt` | Private persistence and uncaught-failure capture. |
++| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/DiagnosticLogging.kt` | HTTP request/response metadata observer. |
++| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/LogsContent.kt` | Selectable Logs tab. |
+diff --git a/docs/features/sandbox.md b/docs/features/sandbox.md
+index 4aecb3a..36c0a24 100644
+--- a/docs/features/sandbox.md
++++ b/docs/features/sandbox.md
+@@ -1,6 +1,6 @@
+ # Linux Sandbox
+ 
+-**Last verified:** 2026-10-02
++**Last verified:** 2026-11-14
+ 
+ Kai ships a self-contained Linux environment on Android so the assistant — and the user, via the in-app Terminal — can run real shell commands. The agent can install packages, write and run scripts, hit the network, and reach external servers over SSH/SFTP/FTP. The sandbox runs the user-space `proot` runtime against a rootfs extracted into the app's private storage; no root or system access is required.
+ 
+@@ -139,6 +139,7 @@ The shell session can break — the user types `exit`, a command crashes bash, t
+ - **Tapping a sandbox-file link in chat**: when the model links to a sandbox file (e.g. a `file:///root/out.gif` markdown link), tapping it opens the file through the same `FileProvider` path rather than the platform URL handler. Handing a raw `file://` URI to Android's `startActivity` throws `FileUriExposedException`, so a global URI handler intercepts `file:` and absolute-path links and routes them to `open_file`; all other links (http/https/…) pass through unchanged.
+ - **Limits**: each shell call's stdout and stderr are individually capped at 15 000 characters; pipe through `head` / `tail` / `grep` for larger output. The default per-call timeout is 30 s and the maximum is 60 s.
+ - **Active-shell indicator**: each time a chat starts running a shell command via the agent's shell tool, the rounded background of the sandbox icon button in the chat top bar flashes once in the primary color (snap on, ~800ms fade out) so the user can see at a glance that the assistant kicked off a sandbox command.
++- **Terminal scrolling and Back**: output, errors, and command echoes preserve their lines and share one horizontal scroll position. Vertical scrollback and text selection remain available. Android Back closes the inline Linux view and returns to the chat, preserving the session and draft. When the keyboard consumes Back first, the next press returns to chat.
+ - **Inline sandbox view**: the chat top-bar terminal icon toggles an inline sandbox surface (Android only) with sub-tabs — **Terminal** (interactive shell, default), **Files** (browse `/root`, open via FileProvider or a built-in text editor with Save), and **Packages** (search/install/uninstall/upgrade through the installed distribution's package manager; base packages cannot be uninstalled). Package search re-ranks hits so name matches come first: exact name, name prefix (typing `fast` surfaces `fastfetch` before packages that only mention "fast" in a description), then hyphen/underscore segment prefixes, then name contains, then description-only hits.
+ - **The file browser is shared with Kai Build**: the same browser — listing, breadcrumbs, editor, rename/delete, open-with — is pointed at whichever Linux environment the surface belongs to. Both browse their environment from the filesystem root and differ only in where they open: the home folder here, the open project in Kai Build. The two never share a position or an open file.
+ - **Bringing a file in from the phone**: the Files tab has an import action that copies a file picked from device storage into the directory currently on screen. Before this the only route into the sandbox was the agent's shell. The copy is streamed rather than buffered, so importing something large does not risk the app's memory, and an existing name is never overwritten — the incoming file is suffixed (`report-1.pdf`) instead. The action is offered only while the listing is showing, since it targets the visible directory; a busy indicator replaces it for the duration and the listing picks up the new file when it lands.
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+index c2f2b6b..4a6c3aa 100644
+--- a/gradle/libs.versions.toml
++++ b/gradle/libs.versions.toml
+@@ -60,6 +60,7 @@ kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.
+ kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
+ ktor-client-cio = { module = "io.ktor:ktor-client-cio", version.ref = "ktor" }
+ ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
++ktor-client-mock = { module = "io.ktor:ktor-client-mock", version.ref = "ktor" }
+ ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ ktor-client-darwin = { module = "io.ktor:ktor-client-darwin", version.ref = "ktor" }
+ ktor-client-js = { module = "io.ktor:ktor-client-js", version.ref = "ktor" }

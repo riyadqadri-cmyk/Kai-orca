@@ -513,4 +513,6 @@
     <string name="terminal_sandbox_not_ready">Sandbox is not ready</string>
     <string name="chat_edit_submission_content_description">Edit submission</string>
     <string name="chat_cancel_edit_content_description">Cancel edit</string>
+    <string name="settings_tab_logs">Logs</string>
+    <string name="settings_logs_empty">No log entries yet.</string>
 </resources>

@@ -5,8 +5,8 @@ package com.inspiredandroid.kai.network
 import com.inspiredandroid.kai.Version
 import com.inspiredandroid.kai.currentPlatform
 import com.inspiredandroid.kai.data.Service
+import com.inspiredandroid.kai.diagnostics.AppLog
 import com.inspiredandroid.kai.httpClient
-import com.inspiredandroid.kai.isDebugBuild
 import com.inspiredandroid.kai.network.dtos.anthropic.AnthropicChatRequestDto
 import com.inspiredandroid.kai.network.dtos.anthropic.AnthropicChatResponseDto
 import com.inspiredandroid.kai.network.dtos.anthropic.AnthropicModelsResponseDto
@@ -24,37 +24,34 @@ import com.inspiredandroid.kai.network.dtos.openairesponses.OpenAIResponsesReque
 import com.inspiredandroid.kai.network.dtos.openairesponses.OpenAIResponsesResponseDto
 import com.inspiredandroid.kai.network.tools.Tool
 import io.ktor.client.call.body
+import io.ktor.client.plugins.HttpResponseValidator
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.UserAgent
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
-import io.ktor.client.plugins.logging.EMPTY
-import io.ktor.client.plugins.logging.LogLevel
-import io.ktor.client.plugins.logging.Logger
-import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.get
 import io.ktor.client.request.header
-import io.ktor.client.request.preparePost
 import io.ktor.client.request.post
+import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
-import io.ktor.client.statement.bodyAsText
 import io.ktor.client.statement.bodyAsChannel
-import io.ktor.utils.io.readUTF8Line
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.content.TextContent
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.time.Duration.Companion.seconds
@@ -157,20 +154,15 @@ class Requests {
             requestTimeoutMillis = 180.seconds.inWholeMilliseconds
             socketTimeoutMillis = 180.seconds.inWholeMilliseconds
         }
-        install(Logging) {
-            if (isDebugBuild) {
-                logger = DebugKtorLogger()
-                level = LogLevel.BODY
-            } else {
-                logger = Logger.EMPTY
-                level = LogLevel.NONE
+        install(DiagnosticLogging)
+        HttpResponseValidator {
+            handleResponseExceptionWithRequest { cause, request ->
+                if (cause is CancellationException) {
+                    AppLog.info("HTTP", "Cancelled ${request.method.value} ${request.url.host}${request.url.encodedPath}")
+                } else {
+                    AppLog.error("HTTP", "Transport/response failure: ${request.method.value} ${request.url.host}${request.url.encodedPath}", cause)
+                }
             }
-        }
-    }
-
-    class DebugKtorLogger : Logger {
-        override fun log(message: String) {
-            println("[KTOR] $message")
         }
     }
 
@@ -230,14 +222,15 @@ class Requests {
         if (response.status.isSuccess()) {
             Result.success(response.body())
         } else {
+            val errorBody = response.bodyAsText()
+            AppLog.error("Provider", "Gemini HTTP ${response.status.value} error body: ${errorBody.take(8_000)}")
             when (response.status.value) {
                 429 -> throw GeminiRateLimitExceededException()
 
                 403 -> throw GeminiInvalidApiKeyException()
 
                 else -> {
-                    val responseBody = response.bodyAsText()
-                    if (responseBody.contains("API_KEY_INVALID", ignoreCase = true)) {
+                    if (errorBody.contains("API_KEY_INVALID", ignoreCase = true)) {
                         throw GeminiInvalidApiKeyException()
                     } else {
                         throw GeminiGenericException("Chat request failed: ${response.status}")
@@ -267,6 +260,7 @@ class Requests {
     ): Result<OpenAICompatibleChatResponseDto> = try {
         val apiKey = getApiKeyOrThrow(service, credentials)
         val model = credentials.modelId.ifEmpty { null }
+        AppLog.info("Provider", "${service.displayName} model=${model ?: "default"}; messages=${messages.size}; tools=${tools.size}")
         val url = resolveUrl(service, credentials, service.chatUrl)
         val response: HttpResponse =
             defaultClient.post(url) {
@@ -280,9 +274,13 @@ class Requests {
                         messages = messages,
                         model = model,
                         tools = tools.toRequestTools { it.toRequestTool() },
-                        thinking = if (service == Service.DeepSeek) OpenAICompatibleChatRequestDto.Thinking(
-                            if (deepSeekThinkingEnabled) "enabled" else "disabled"
-                        ) else null,
+                        thinking = if (service == Service.DeepSeek) {
+                            OpenAICompatibleChatRequestDto.Thinking(
+                                if (deepSeekThinkingEnabled) "enabled" else "disabled",
+                            )
+                        } else {
+                            null
+                        },
                     ),
                 )
             }
@@ -294,10 +292,12 @@ class Requests {
     } catch (e: OpenAICompatibleApiException) {
         Result.failure(e)
     } catch (e: io.ktor.client.plugins.HttpRequestTimeoutException) {
+        AppLog.error("Provider", "${service.displayName} request timed out", e)
         Result.failure(OpenAICompatibleConnectionException())
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
+        AppLog.error("Provider", "${service.displayName} request/decoding failure", e)
         Result.failure(mapOpenAICompatibleException(e))
     }
 
@@ -325,13 +325,15 @@ class Requests {
             header("Accept", "text/event-stream")
             apiKey?.let { bearerAuth(it) }
             applySessionHeader(service, credentials, sessionId)
-            setBody(OpenAICompatibleChatRequestDto(
-                messages = messages,
-                model = credentials.modelId.ifEmpty { null },
-                tools = tools.toRequestTools { it.toRequestTool() },
-                stream = true,
-                thinking = OpenAICompatibleChatRequestDto.Thinking(if (thinkingEnabled) "enabled" else "disabled"),
-            ))
+            setBody(
+                OpenAICompatibleChatRequestDto(
+                    messages = messages,
+                    model = credentials.modelId.ifEmpty { null },
+                    tools = tools.toRequestTools { it.toRequestTool() },
+                    stream = true,
+                    thinking = OpenAICompatibleChatRequestDto.Thinking(if (thinkingEnabled) "enabled" else "disabled"),
+                ),
+            )
         }.execute { response ->
             if (!response.status.isSuccess()) {
                 handleOpenAICompatibleError(service, credentials, response)
@@ -345,7 +347,10 @@ class Requests {
                 val payload = raw.lines().filter { it.startsWith("data:") }
                     .joinToString("\n") { it.removePrefix("data:").trimStart() }
                 if (payload.isBlank()) return
-                if (payload == "[DONE]") { receivedDone = true; return }
+                if (payload == "[DONE]") {
+                    receivedDone = true
+                    return
+                }
                 val obj = Json.parseToJsonElement(payload).jsonObject
                 if (obj["error"] != null) throw OpenAICompatibleGenericException("DeepSeek streaming error: ${obj["error"]}")
                 val choice = (obj["choices"] as? JsonArray)?.firstOrNull()?.jsonObject ?: return
@@ -367,8 +372,11 @@ class Requests {
             }
             while (true) {
                 val line = channel.readUTF8Line() ?: break
-                if (line.isBlank()) processEvent()
-                else if (line.startsWith("data:")) event.append(line).append('\n')
+                if (line.isBlank()) {
+                    processEvent()
+                } else if (line.startsWith("data:")) {
+                    event.append(line).append('\n')
+                }
             }
             processEvent()
         }
@@ -379,20 +387,26 @@ class Requests {
                 function = OpenAICompatibleChatResponseDto.FunctionCall(call.name, call.args.toString()),
             )
         }
-        Result.success(OpenAICompatibleChatResponseDto(listOf(
-            OpenAICompatibleChatResponseDto.Choice(
-                OpenAICompatibleChatResponseDto.Choice.Message(
-                    role = "assistant", content = content.toString(),
-                    reasoningContent = reasoning.toString().takeIf { it.isNotBlank() },
-                    toolCalls = toolCalls.takeIf { it.isNotEmpty() },
+        Result.success(
+            OpenAICompatibleChatResponseDto(
+                listOf(
+                    OpenAICompatibleChatResponseDto.Choice(
+                        OpenAICompatibleChatResponseDto.Choice.Message(
+                            role = "assistant",
+                            content = content.toString(),
+                            reasoningContent = reasoning.toString().takeIf { it.isNotBlank() },
+                            toolCalls = toolCalls.takeIf { it.isNotEmpty() },
+                        ),
+                    ),
                 ),
             ),
-        )))
+        )
     } catch (e: CancellationException) {
         throw e
     } catch (e: OpenAICompatibleApiException) {
         Result.failure(e)
     } catch (e: Exception) {
+        AppLog.error("Provider", "${service.displayName} request/decoding failure", e)
         Result.failure(mapOpenAICompatibleException(e))
     }
 
@@ -433,10 +447,12 @@ class Requests {
     } catch (e: OpenAICompatibleApiException) {
         Result.failure(e)
     } catch (e: io.ktor.client.plugins.HttpRequestTimeoutException) {
+        AppLog.error("Provider", "${service.displayName} request timed out", e)
         Result.failure(OpenAICompatibleConnectionException())
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
+        AppLog.error("Provider", "${service.displayName} request/decoding failure", e)
         Result.failure(mapOpenAICompatibleException(e))
     }
 
@@ -539,6 +555,7 @@ class Requests {
             val dto = anthropicJson.decodeFromString(AnthropicModelsResponseDto.serializer(), responseBody)
             Result.success(dto)
         } else {
+            AppLog.error("Provider", "Anthropic HTTP ${response.status.value} error body: ${responseBody.take(8_000)}")
             throwAnthropicError(response.status.value, responseBody)
         }
     } catch (e: AnthropicApiException) {
@@ -578,6 +595,7 @@ class Requests {
             val dto = anthropicJson.decodeFromString(AnthropicChatResponseDto.serializer(), responseBody)
             Result.success(dto)
         } else {
+            AppLog.error("Provider", "Anthropic HTTP ${response.status.value} error body: ${responseBody.take(8_000)}")
             throwAnthropicError(response.status.value, responseBody)
         }
     } catch (e: AnthropicApiException) {
@@ -637,6 +655,7 @@ class Requests {
         response: HttpResponse,
     ): Nothing {
         val responseBody = response.bodyAsText()
+        AppLog.error("Provider", "${service.displayName}/${credentials.modelId} HTTP ${response.status.value} error body: ${responseBody.take(8_000)}")
         val parsed = parseOpenAICompatibleErrorDetail(responseBody)
         val moderationDetail = parsed.moderationDetail()
         when (response.status.value) {

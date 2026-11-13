@@ -5,6 +5,8 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.inspiredandroid.kai.data.TaskScheduler
+import com.inspiredandroid.kai.diagnostics.AppLog
+import com.inspiredandroid.kai.diagnostics.initializeAppLogging
 import com.inspiredandroid.kai.sandbox.sandboxModule
 import org.koin.android.ext.android.inject
 import org.koin.android.ext.koin.androidContext
@@ -16,6 +18,7 @@ class KaiApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        initializeAppLogging(this)
         startKoin {
             androidContext(this@KaiApplication)
             modules(appModule, sandboxModule)
@@ -25,9 +28,11 @@ class KaiApplication : Application() {
         // it survives backgrounding and only clears on Activity destruction.
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
+                AppLog.info("App", "Entered foreground")
                 taskScheduler.appInForeground = true
             }
             override fun onStop(owner: LifecycleOwner) {
+                AppLog.info("App", "Entered background")
                 taskScheduler.appInForeground = false
             }
         })

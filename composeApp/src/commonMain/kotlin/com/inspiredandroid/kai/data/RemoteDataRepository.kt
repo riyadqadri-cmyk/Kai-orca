@@ -5,12 +5,10 @@ package com.inspiredandroid.kai.data
 import com.inspiredandroid.kai.SandboxController
 import com.inspiredandroid.kai.compressImageBytes
 import com.inspiredandroid.kai.currentPlatform
-import com.inspiredandroid.kai.pruneAttachedImages
-import com.inspiredandroid.kai.readAttachedImage
-import com.inspiredandroid.kai.writeAttachedImage
 import com.inspiredandroid.kai.data.providers.buildAnthropicMessages
 import com.inspiredandroid.kai.data.providers.buildOpenAIMessages
 import com.inspiredandroid.kai.data.providers.toResponsesInput
+import com.inspiredandroid.kai.diagnostics.AppLog
 import com.inspiredandroid.kai.email.EmailPoller
 import com.inspiredandroid.kai.formatFileSize
 import com.inspiredandroid.kai.getAvailableTools
@@ -53,6 +51,8 @@ import com.inspiredandroid.kai.network.dtos.openairesponses.OpenAIResponsesRespo
 import com.inspiredandroid.kai.network.toUiError
 import com.inspiredandroid.kai.network.tools.Tool
 import com.inspiredandroid.kai.network.tools.ToolInfo
+import com.inspiredandroid.kai.pruneAttachedImages
+import com.inspiredandroid.kai.readAttachedImage
 import com.inspiredandroid.kai.skills.RegistrySkillEntry
 import com.inspiredandroid.kai.skills.SkillManager
 import com.inspiredandroid.kai.skills.SkillManifest
@@ -66,6 +66,7 @@ import com.inspiredandroid.kai.ui.chat.History
 import com.inspiredandroid.kai.ui.chat.ToolCallInfo
 import com.inspiredandroid.kai.ui.chat.toGeminiMessageDto
 import com.inspiredandroid.kai.ui.settings.SettingsModel
+import com.inspiredandroid.kai.writeAttachedImage
 import io.github.vinceglb.filekit.PlatformFile
 import io.github.vinceglb.filekit.mimeType
 import io.github.vinceglb.filekit.name
@@ -1037,6 +1038,7 @@ class RemoteDataRepository(
 
         val fallbackEntries = getOrderedFallbackEntries().filter { hasValidInstanceApiKey(it.instanceId, it.service) }
 
+        AppLog.info("Chat", "Starting turn; provider order=${fallbackEntries.joinToString { entry -> "${entry.service.displayName}/${instanceCredentials(entry.instanceId, entry.service).modelId}" }}")
         val historyChars = messages.sumOf { it.content.length } + (systemPrompt?.length ?: 0)
 
         var lastException: Exception? = null
@@ -1044,12 +1046,16 @@ class RemoteDataRepository(
 
         try {
             for ((index, entry) in fallbackEntries.withIndex()) {
+                val diagnosticModel = instanceCredentials(entry.instanceId, entry.service).modelId
+                val diagnosticProvider = "${entry.service.displayName}/$diagnosticModel"
+                AppLog.info("Chat", "Trying ${index + 1}/${fallbackEntries.size}: $diagnosticProvider; history chars=$historyChars")
                 // Skip fallback services whose context window is too small for the current history
                 // On-device models handle their own context limits, so skip this check for them
                 if (!entry.service.isOnDevice) {
                     val creds = instanceCredentials(entry.instanceId, entry.service)
                     val entryWindowChars = ModelCatalog.estimateContextWindow(creds.modelId) * ESTIMATED_CHARS_PER_TOKEN
                     if (historyChars > entryWindowChars) {
+                        AppLog.error("Fallback", "Skipping $diagnosticProvider: history $historyChars chars exceeds estimated context $entryWindowChars chars")
                         lastException = ContextWindowExceededException()
                         _fallbackStatus.value = FallbackStatus(
                             serviceName = entry.service.displayName,
@@ -1067,6 +1073,7 @@ class RemoteDataRepository(
                     askWithService(entry.service, messages, systemPrompt, entry.instanceId)
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
+                    AppLog.error("Fallback", "$diagnosticProvider failed; next=${fallbackEntries.getOrNull(index + 1)?.service?.displayName ?: "none"}", e)
                     // On-device services should not silently fall back — surface the error
                     if (entry.service.isOnDevice) throw e
                     lastException = e
@@ -1077,6 +1084,7 @@ class RemoteDataRepository(
                     )
                     continue
                 }
+                AppLog.info("Chat", "Turn succeeded via $diagnosticProvider")
                 if (index > 0) {
                     fallbackServiceName = entry.service.displayName
                 }
@@ -1100,6 +1108,7 @@ class RemoteDataRepository(
                 return
             }
 
+            AppLog.error("Fallback", "All ${fallbackEntries.size} eligible providers failed", lastException)
             throw if (fallbackEntries.size > 1 && lastException != null) {
                 AllServicesFailedException()
             } else {
@@ -1319,100 +1328,100 @@ class RemoteDataRepository(
         // without another iteration (the common view_image case: tool call, then final answer).
         val lastConsumedImageIds = mutableListOf<String>()
         try {
-        while (true) {
-            iteration++
-            // Pixels that were in history for the previous round have now been sent to the model
-            // exactly once. Replace them with markers so later rounds and turns don't re-send
-            // base64. Anything still in [deliveredImageIds] was never consumed and must be kept.
-            if (seenImageIds.isNotEmpty()) {
-                stripDrainedImageAttachments(seenImageIds)
-                seenImageIds.clear()
-            }
-            val visible = history.value.filter { it.role != History.Role.TOOL_EXECUTING }.let { full ->
-                // Trim a request copy only — the history flow is the visible, persisted conversation.
-                strategy.historyContextWindowTokens
-                    ?.let { trimHistoryForContext(full, systemPrompt?.length ?: 0, it).ifEmpty { full } }
-                    ?: full
-            }
-            if (iteration > MAX_TOOL_ITERATIONS) {
-                return AssistantTurn(strategy.bailout(visible, systemPrompt, BailoutReason.LIMIT_REACHED))
-            }
-            // The model is about to see whatever image pixels are currently in history.
-            seenImageIds += deliveredImageIds
-            lastConsumedImageIds.clear()
-            lastConsumedImageIds += deliveredImageIds
-            deliveredImageIds.clear()
-            val result = strategy.chat(visible, systemPrompt)
-            if (result.toolCalls.isEmpty()) {
-                // For thinking-only turns, the reasoning text already became the content via
-                // `isContentFromReasoning`, so don't surface it again as a reasoning trace.
-                val reasoning = result.reasoningContent?.takeIf { !result.isThinkingContent }
-                return AssistantTurn(result.textContent, reasoning)
-            }
-
-            val signatures = result.toolCalls.map { "${it.name}:${it.arguments.hashCode()}" }
-            if (isRepeatingToolCalls(recentSignatures, signatures)) {
-                return AssistantTurn(strategy.bailout(visible, systemPrompt, BailoutReason.REPEATING))
-            }
-            recentSignatures.addAll(signatures)
-
-            history.update {
-                it.toMutableList().apply {
-                    add(
-                        History(
-                            role = History.Role.ASSISTANT,
-                            content = result.textContent,
-                            isThinking = result.isThinkingContent,
-                            toolCalls = result.toolCalls.toImmutableList(),
-                            reasoningContent = result.reasoningContent,
-                        ),
-                    )
+            while (true) {
+                iteration++
+                // Pixels that were in history for the previous round have now been sent to the model
+                // exactly once. Replace them with markers so later rounds and turns don't re-send
+                // base64. Anything still in [deliveredImageIds] was never consumed and must be kept.
+                if (seenImageIds.isNotEmpty()) {
+                    stripDrainedImageAttachments(seenImageIds)
+                    seenImageIds.clear()
                 }
-            }
+                val visible = history.value.filter { it.role != History.Role.TOOL_EXECUTING }.let { full ->
+                    // Trim a request copy only — the history flow is the visible, persisted conversation.
+                    strategy.historyContextWindowTokens
+                        ?.let { trimHistoryForContext(full, systemPrompt?.length ?: 0, it).ifEmpty { full } }
+                        ?: full
+                }
+                if (iteration > MAX_TOOL_ITERATIONS) {
+                    return AssistantTurn(strategy.bailout(visible, systemPrompt, BailoutReason.LIMIT_REACHED))
+                }
+                // The model is about to see whatever image pixels are currently in history.
+                seenImageIds += deliveredImageIds
+                lastConsumedImageIds.clear()
+                lastConsumedImageIds += deliveredImageIds
+                deliveredImageIds.clear()
+                val result = strategy.chat(visible, systemPrompt)
+                if (result.toolCalls.isEmpty()) {
+                    // For thinking-only turns, the reasoning text already became the content via
+                    // `isContentFromReasoning`, so don't surface it again as a reasoning trace.
+                    val reasoning = result.reasoningContent?.takeIf { !result.isThinkingContent }
+                    return AssistantTurn(result.textContent, reasoning)
+                }
 
-            val toolResults = executeToolCallsInParallel(
-                result.toolCalls.map { Triple(it.id, it.name, it.arguments) },
-                history,
-            )
+                val signatures = result.toolCalls.map { "${it.name}:${it.arguments.hashCode()}" }
+                if (isRepeatingToolCalls(recentSignatures, signatures)) {
+                    return AssistantTurn(strategy.bailout(visible, systemPrompt, BailoutReason.REPEATING))
+                }
+                recentSignatures.addAll(signatures)
 
-            history.update { h ->
-                buildList(h.size + toolResults.size) {
-                    for (entry in h) {
-                        if (entry.role != History.Role.TOOL_EXECUTING) add(entry)
-                    }
-                    for ((callId, name, content) in toolResults) {
+                history.update {
+                    it.toMutableList().apply {
                         add(
                             History(
-                                role = History.Role.TOOL,
-                                content = content,
-                                toolCallId = callId,
-                                toolName = name,
+                                role = History.Role.ASSISTANT,
+                                content = result.textContent,
+                                isThinking = result.isThinkingContent,
+                                toolCalls = result.toolCalls.toImmutableList(),
+                                reasoningContent = result.reasoningContent,
                             ),
                         )
                     }
                 }
-            }
 
-            // view_image cannot return pixels through a tool result (it is text/JSON only), so
-            // the tool parks them in the shared buffer. Deliver them now, before the next round,
-            // as a USER message — DeepSeek rejects an image in any other role.
-            val drainedImages = pendingImageBuffer.drain()
-            if (drainedImages.isNotEmpty()) {
-                // Park the ids; the strip happens at the top of the NEXT iteration, after the
-                // model has actually consumed the pixels once. Stripping here would hand the very
-                // next round a marker instead of the image and the tool would be pointless.
+                val toolResults = executeToolCallsInParallel(
+                    result.toolCalls.map { Triple(it.id, it.name, it.arguments) },
+                    history,
+                )
+
                 history.update { h ->
-                    h + History(
-                        role = History.Role.USER,
-                        content = "Images loaded via view_image:",
-                        attachments = drainedImages.toImmutableList(),
-                    )
+                    buildList(h.size + toolResults.size) {
+                        for (entry in h) {
+                            if (entry.role != History.Role.TOOL_EXECUTING) add(entry)
+                        }
+                        for ((callId, name, content) in toolResults) {
+                            add(
+                                History(
+                                    role = History.Role.TOOL,
+                                    content = content,
+                                    toolCallId = callId,
+                                    toolName = name,
+                                ),
+                            )
+                        }
+                    }
                 }
-                // These pixels are in history but no chat call has seen them yet. If the loop
-                // exits now, they must stay: nothing consumed them.
-                deliveredImageIds += drainedImages.mapNotNull { it.fileName }
+
+                // view_image cannot return pixels through a tool result (it is text/JSON only), so
+                // the tool parks them in the shared buffer. Deliver them now, before the next round,
+                // as a USER message — DeepSeek rejects an image in any other role.
+                val drainedImages = pendingImageBuffer.drain()
+                if (drainedImages.isNotEmpty()) {
+                    // Park the ids; the strip happens at the top of the NEXT iteration, after the
+                    // model has actually consumed the pixels once. Stripping here would hand the very
+                    // next round a marker instead of the image and the tool would be pointless.
+                    history.update { h ->
+                        h + History(
+                            role = History.Role.USER,
+                            content = "Images loaded via view_image:",
+                            attachments = drainedImages.toImmutableList(),
+                        )
+                    }
+                    // These pixels are in history but no chat call has seen them yet. If the loop
+                    // exits now, they must stay: nothing consumed them.
+                    deliveredImageIds += drainedImages.mapNotNull { it.fileName }
+                }
             }
-        }
         } finally {
             val stragglers = (seenImageIds + lastConsumedImageIds).distinct()
             if (stragglers.isNotEmpty()) {
@@ -1569,9 +1578,14 @@ class RemoteDataRepository(
                 return block()
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
-                if (isNonRetryableException(e)) throw e
+                if (isNonRetryableException(e)) {
+                    AppLog.error("Retry", "Non-retryable API failure; moving to fallback", e)
+                    throw e
+                }
                 lastException = e
+                AppLog.error("Retry", "API attempt ${attempt + 1}/${MAX_API_RETRIES + 1} failed", e)
                 if (attempt < MAX_API_RETRIES) {
+                    AppLog.info("Retry", "Retrying in ${attempt + 1} seconds")
                     delay((attempt + 1).seconds)
                 }
             }
@@ -1765,8 +1779,10 @@ class RemoteDataRepository(
         // before the marker is written would otherwise compute an empty keep-set and wipe the
         // directory (the bug that made view_image return "No image stored").
         pruneAttachedImages(
-            (history.flatMap { message -> ImageMarker.extractIds(message.content) } +
-                recentlyWrittenImageIds).toSet(),
+            (
+                history.flatMap { message -> ImageMarker.extractIds(message.content) } +
+                    recentlyWrittenImageIds
+                ).toSet(),
         )
 
         val now = Clock.System.now().toEpochMilliseconds()

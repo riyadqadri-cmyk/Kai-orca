@@ -3,6 +3,7 @@ package com.inspiredandroid.kai.ui.markdown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -28,37 +29,43 @@ internal fun InlineContent(
     style: TextStyle,
     modifier: Modifier = Modifier,
     textAlign: TextAlign = TextAlign.Unspecified,
+    softWrap: Boolean = true,
 ) {
     if (!containsMath(inlines)) {
         Text(
             text = inlines.toAnnotatedString(),
             style = style,
             textAlign = textAlign,
+            softWrap = softWrap,
             modifier = modifier,
         )
         return
     }
 
     val segments = remember(inlines) { splitAroundMath(inlines) }
-    FlowRow(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.Start,
-        verticalArrangement = Arrangement.Center,
-        // Top-align keeps adjacent text anchored when a math child (e.g. a fraction) is tall,
-        // which in turn keeps list-bullets aligned with their first line of content.
-        itemVerticalAlignment = Alignment.Top,
-    ) {
+    val content: @Composable () -> Unit = {
         for (seg in segments) {
             when (seg) {
                 is InlineSegment.TextRun -> Text(
                     text = seg.nodes.toAnnotatedString().flattenNewlines(),
                     style = style,
                     textAlign = textAlign,
+                    softWrap = softWrap,
                 )
 
                 is InlineSegment.Math -> MathFormula(latex = seg.latex, display = false)
             }
         }
+    }
+    if (softWrap) {
+        FlowRow(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.Start,
+            verticalArrangement = Arrangement.Center,
+            itemVerticalAlignment = Alignment.Top,
+        ) { content() }
+    } else {
+        Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) { content() }
     }
 }
 

@@ -1,8 +1,12 @@
 # Chat & Conversations
 
-**Last verified:** 2026-10-02
+**Last verified:** 2026-11-14
 
 Kai's chat system manages the message history, conversation persistence, file attachments, and speech output. Conversations are service-independent — switching providers does not affect which conversation is loaded or restored. Multiple conversations are persisted and browsable via a history sheet.
+
+## Wide content
+
+Normal prose wraps to the chat width. Fenced code preserves indentation and explicit newlines, with a horizontal swipe for long lines. Markdown tables share content-sized column widths across every row and scroll horizontally as a whole; cells only break at explicit newlines. This also applies inside lists and quotations.
 
 ## Concepts
 
@@ -146,3 +150,6 @@ Multiple files can be attached to a single prompt. Each file is added one at a t
 | `composeApp/src/commonMain/.../ui/chat/composables/QuestionInput.kt` | Text input with send/stop button |
 | `androidApp/src/main/AndroidManifest.xml` | Share-sheet registration for plain text (`ACTION_SEND`) |
 | `androidApp/src/main/kotlin/.../MainActivity.kt` | Reads shared text from `ACTION_SEND` and hands it to chat |
+| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/MarkdownRenderer.kt` | Content-sized table columns with shared horizontal scrolling. |
+| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/CodeFenceBlock.kt` | Non-wrapping, horizontally scrollable fenced code. |
+| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/InlineContent.kt` | Inline rendering with wrapping enabled for prose and disabled for table cells. |

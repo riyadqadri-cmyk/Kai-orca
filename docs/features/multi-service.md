@@ -1,6 +1,6 @@
 # Multi-Service
 
-**Last verified:** 2026-10-02
+**Last verified:** 2026-11-14
 
 Kai supports 31 LLM providers (plus a built-in Free tier). Each provider uses one of three API formats: **OpenAI-compatible** (most services), **Gemini native**, or **Anthropic native** -- plus **LiteRT on-device** for local inference. A handful of OpenAI models additionally require OpenAI's **Responses API**; Kai switches to it per model, transparently. Users can configure multiple service instances, reorder them, and Kai automatically falls back through the chain on failure.
 
@@ -31,6 +31,14 @@ A built-in service that requires no API key. Free is never shown in the service 
 - A last-resort fallback when "Use as fallback" is enabled (default)
 
 When Free is the only path and the user hits Free FAST/EXPERT rate or quota limits, chat shows a free-provider signup panel (Groq, Cerebras, Gemini, OpenRouter, Ollama Cloud) so they can open an API-key page and continue with a personal free tier. See [chat.md](chat.md).
+
+## Diagnostics
+
+Settings → Logs is a single selectable, scrollable text box available in release builds. It shows timestamped request metadata, HTTP statuses and timing, provider error bodies, retry delays, context skips, fallback attempts, completion, and exhaustion. Free FAST and EXPERT are identified by their mode. Transport and decoding failures retain their underlying exception details. This adds observability without changing routing, retry policy, or provider configuration.
+
+Free requests go through a remote gateway: logs can show only the upstream failure details that gateway returns. Internal provider failures hidden by the gateway cannot be reconstructed on the phone.
+
+Recent diagnostics are capped at roughly 256,000 characters and saved in private app storage across restarts, outside Android backup. Lifecycle events, tool execution status, shell command status, and uncaught crashes are included. Chat payloads, successful response bodies, shell commands, and tool arguments are omitted. Configured API keys, authorization values, and credential-like query values are redacted. The HTTP observer does not consume response bodies or disturb streaming.
 
 ## Fallback Chain
 
@@ -198,3 +206,7 @@ Users manage services through the settings screen:
 | `composeApp/src/commonMain/.../ui/chat/ChatScreen.kt` | Chat screen, renders ServiceSelector |
 | `composeApp/src/commonMain/.../ui/chat/composables/ServiceSelector.kt` | Compact service toggle dropdown |
 | `composeApp/src/commonMain/.../ui/chat/ChatViewModel.kt` | Wires service selection and reordering |
+| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/diagnostics/AppLog.kt` | Bounded, observable, redacted diagnostic buffer. |
+| `composeApp/src/androidMain/kotlin/com/inspiredandroid/kai/diagnostics/AndroidAppLog.kt` | Private persistence and uncaught-failure capture. |
+| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/DiagnosticLogging.kt` | HTTP request/response metadata observer. |
+| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/settings/LogsContent.kt` | Selectable Logs tab. |

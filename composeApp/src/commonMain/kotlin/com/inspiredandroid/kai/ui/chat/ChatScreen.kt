@@ -510,6 +510,10 @@ private fun ChatModeScreen(
         mutableStateOf(TextFieldValue(""))
     }
     val keyboardController = LocalSoftwareKeyboardController.current
+    com.inspiredandroid.kai.PlatformBackHandler(enabled = isSandboxOpen) {
+        keyboardController?.hide()
+        isSandboxOpen = false
+    }
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(uiState.composerPrefill) {

@@ -2,6 +2,8 @@ package com.inspiredandroid.kai.sandbox
 
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.inspiredandroid.kai.TerminalLine
+import com.inspiredandroid.kai.diagnostics.AppLog
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
@@ -39,9 +41,10 @@ class SessionShell(
         onStdout: ((String) -> Unit)? = null,
         onStderr: ((String) -> Unit)? = null,
     ): Map<String, Any> {
+        AppLog.info("Terminal", "Starting shell command; timeout=${timeoutSeconds}s")
         buffer.append(TerminalLine.Command(displayCommand))
         try {
-            return inner.run(
+            val result = inner.run(
                 command = command,
                 timeoutSeconds = timeoutSeconds,
                 onStdout = { line ->
@@ -53,6 +56,14 @@ class SessionShell(
                     onStderr?.invoke(line)
                 },
             )
+            AppLog.info("Terminal", "Shell command finished; exit_code=${result["exit_code"]}; success=${result["success"]}")
+            return result
+        } catch (e: CancellationException) {
+            AppLog.info("Terminal", "Shell command cancelled")
+            throw e
+        } catch (e: Exception) {
+            AppLog.error("Terminal", "Shell command failed", e)
+            throw e
         } finally {
             val lines = withContext(NonCancellable) { buffer.flush() }
             onChange?.invoke(lines)

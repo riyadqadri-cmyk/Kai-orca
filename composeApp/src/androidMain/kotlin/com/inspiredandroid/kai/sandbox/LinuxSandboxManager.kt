@@ -8,6 +8,7 @@ import com.inspiredandroid.kai.SandboxStatusLabel
 import com.inspiredandroid.kai.TerminalLine
 import com.inspiredandroid.kai.data.AppSettings
 import com.inspiredandroid.kai.data.ConversationStorage
+import com.inspiredandroid.kai.diagnostics.AppLog
 import com.inspiredandroid.kai.linux.DistroSpec
 import com.inspiredandroid.kai.linux.GuestFileMap
 import com.inspiredandroid.kai.linux.HomeMigration
@@ -212,7 +213,7 @@ class LinuxSandboxManager(
             } catch (_: kotlinx.coroutines.CancellationException) {
                 _state.value = SandboxState.Ready
             } catch (e: Exception) {
-                android.util.Log.e("LinuxSandbox", "Home migration failed", e)
+                AppLog.error("LinuxSandbox", "Home migration failed", e)
                 _state.value = SandboxState.Error(SandboxStatusLabel.Failure.Copy(e.message.orEmpty()))
             }
         }
@@ -237,7 +238,7 @@ class LinuxSandboxManager(
             } catch (e: kotlinx.coroutines.CancellationException) {
                 checkExistingInstallation()
             } catch (e: Exception) {
-                android.util.Log.e("LinuxSandbox", "Setup failed", e)
+                AppLog.error("LinuxSandbox", "Setup failed", e)
                 marker = paths.readMarker()
                 _state.value = SandboxState.Error(SandboxStatusLabel.Failure.Setup(e.message.orEmpty()))
             }
@@ -399,7 +400,7 @@ class LinuxSandboxManager(
             } catch (_: kotlinx.coroutines.CancellationException) {
                 _state.value = SandboxState.Ready
             } catch (e: Exception) {
-                android.util.Log.e("LinuxSandbox", "Package install exception", e)
+                AppLog.error("LinuxSandbox", "Package install exception", e)
                 _state.value = SandboxState.Error(SandboxStatusLabel.Failure.Install(e.message.orEmpty()))
             }
         }
@@ -426,7 +427,7 @@ class LinuxSandboxManager(
                     val detail = listOf("stderr", "error", "stdout")
                         .firstNotNullOfOrNull { (result[it] as? String)?.takeIf(String::isNotBlank) }
                         .orEmpty()
-                    android.util.Log.e("LinuxSandbox", "Failed to install $pkg: $detail")
+                    AppLog.error("LinuxSandbox", "Failed to install $pkg: $detail")
                     _state.value = SandboxState.Error(SandboxStatusLabel.Failure.Package(pkg, detail.take(200)))
                     return
                 }
@@ -436,7 +437,7 @@ class LinuxSandboxManager(
         // `ssh user@host` from now on works without a prompt this shell cannot
         // answer. Idempotent; failures here are non-fatal.
         runCatching { SshConfigManager(File(homePath)).ensureDefaults() }
-            .onFailure { android.util.Log.w("LinuxSandbox", "ssh defaults seed failed: ${it.message}") }
+            .onFailure { AppLog.error("LinuxSandbox", "ssh defaults seed failed: ${it.message}") }
         _state.value = SandboxState.Ready
     }
 

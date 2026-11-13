@@ -72,10 +72,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.inspiredandroid.kai.BackIcon
 import com.inspiredandroid.kai.Version
+import com.inspiredandroid.kai.data.AppSettings
 import com.inspiredandroid.kai.data.EmailAccount
 import com.inspiredandroid.kai.data.Service
-import com.inspiredandroid.kai.data.AppSettings
-import org.koin.compose.koinInject
 import com.inspiredandroid.kai.linux.LinuxDistro
 import com.inspiredandroid.kai.ui.components.VerticalScrollbarForScroll
 import com.inspiredandroid.kai.ui.handCursor
@@ -90,6 +89,7 @@ import kai.composeapp.generated.resources.settings_licenses_close
 import kai.composeapp.generated.resources.settings_tab_agent
 import kai.composeapp.generated.resources.settings_tab_general
 import kai.composeapp.generated.resources.settings_tab_integrations
+import kai.composeapp.generated.resources.settings_tab_logs
 import kai.composeapp.generated.resources.settings_tab_sandbox
 import kai.composeapp.generated.resources.settings_tab_services
 import kai.composeapp.generated.resources.settings_tab_tools
@@ -105,6 +105,7 @@ import kotlinx.collections.immutable.ImmutableList
 import kotlinx.collections.immutable.toImmutableList
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
+import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 
 internal val StatusColorConnected = Color(0xFF4CAF50)
@@ -251,95 +252,103 @@ fun SettingsScreenContent(
 
             val settingsScrollState = rememberScrollState()
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                Column(
-                    Modifier.fillMaxWidth().verticalScroll(settingsScrollState),
-                    horizontalAlignment = CenterHorizontally,
-                ) {
-                    Spacer(Modifier.height(16.dp))
-
-                    val maxContentWidth = when (filteredUiState.currentTab) {
-                        SettingsTab.Services -> 500.dp
-                        else -> 900.dp
-                    }
+                if (filteredUiState.currentTab == SettingsTab.Logs) {
+                    LogsContent(Modifier.fillMaxSize().padding(16.dp))
+                } else {
                     Column(
-                        Modifier.widthIn(max = maxContentWidth).fillMaxWidth().padding(horizontal = 16.dp),
+                        Modifier.fillMaxWidth().verticalScroll(settingsScrollState),
                         horizontalAlignment = CenterHorizontally,
                     ) {
-                        when (filteredUiState.currentTab) {
-                            SettingsTab.General -> {
-                                GeneralContent(uiState = filteredUiState, actions = actions)
+                        Spacer(Modifier.height(16.dp))
+
+                        val maxContentWidth = when (filteredUiState.currentTab) {
+                            SettingsTab.Services -> 500.dp
+                            else -> 900.dp
+                        }
+                        Column(
+                            Modifier.widthIn(max = maxContentWidth).fillMaxWidth().padding(horizontal = 16.dp),
+                            horizontalAlignment = CenterHorizontally,
+                        ) {
+                            when (filteredUiState.currentTab) {
+                                SettingsTab.Logs -> Unit
+
+                                // Rendered in the bounded box above.
+
+                                SettingsTab.General -> {
+                                    GeneralContent(uiState = filteredUiState, actions = actions)
+                                }
+
+                                SettingsTab.Appearance -> {
+                                    AppearanceEditor()
+                                }
+
+                                SettingsTab.Agent -> {
+                                    AgentContent(uiState = filteredUiState, actions = actions)
+                                }
+
+                                SettingsTab.Services -> {
+                                    ServicesContent(uiState = filteredUiState, actions = actions)
+                                }
+
+                                SettingsTab.Integrations -> {
+                                    IntegrationsContent()
+                                }
+
+                                SettingsTab.Tools -> {
+                                    ToolsContent(
+                                        tools = filteredUiState.tools,
+                                        onToggleTool = actions.onToggleTool,
+                                        mcpServers = filteredUiState.mcpServers,
+                                        onAddMcpServer = actions.onAddMcpServer,
+                                        onRemoveMcpServer = actions.onRemoveMcpServer,
+                                        onToggleMcpServer = actions.onToggleMcpServer,
+                                        onRefreshMcpServer = actions.onRefreshMcpServer,
+                                        showAddMcpServerDialog = filteredUiState.showAddMcpServerDialog,
+                                        onShowAddMcpServerDialog = actions.onShowAddMcpServerDialog,
+                                        onAddPopularMcpServer = actions.onAddPopularMcpServer,
+                                        skills = filteredUiState.skills,
+                                        onUninstallSkill = actions.onUninstallSkill,
+                                        showAddSkillDialog = filteredUiState.showAddSkillDialog,
+                                        onShowAddSkillDialog = actions.onShowAddSkillDialog,
+                                        onInstallGitHubSkill = actions.onInstallGitHubSkill,
+                                        onInstallBrowsedSkill = actions.onInstallBrowsedSkill,
+                                        isInstallingSkill = filteredUiState.isInstallingSkill,
+                                        skillInstallError = filteredUiState.skillInstallError,
+                                        browsableSkills = filteredUiState.browsableSkills,
+                                        isBrowsingSkills = filteredUiState.isBrowsingSkills,
+                                        browseSkillsFailed = filteredUiState.browseSkillsFailed,
+                                        showSkills = sandboxState.showSandbox,
+                                        isSandboxInstalled = sandboxState.sandboxInstalled,
+                                        onNavigateToSandbox = { actions.onSelectTab(SettingsTab.Sandbox) },
+                                    )
+                                }
+
+                                SettingsTab.Sandbox -> {
+                                    SandboxSettingsCard(
+                                        sandboxState = sandboxState,
+                                        onToggleSandbox = onToggleSandbox,
+                                        onSelectDistro = onSelectDistro,
+                                        onSetupSandbox = onSetupSandbox,
+                                        onCancelSandbox = onCancelSandbox,
+                                        onResetSandbox = onResetSandbox,
+                                        onInstallPackages = onInstallPackages,
+                                        onMigrateHome = onMigrateHome,
+                                    )
+                                }
                             }
 
-                            SettingsTab.Appearance -> {
-                                AppearanceEditor()
-                            }
-
-                            SettingsTab.Agent -> {
-                                AgentContent(uiState = filteredUiState, actions = actions)
-                            }
-
-                            SettingsTab.Services -> {
-                                ServicesContent(uiState = filteredUiState, actions = actions)
-                            }
-
-                            SettingsTab.Integrations -> {
-                                IntegrationsContent()
-                            }
-
-                            SettingsTab.Tools -> {
-                                ToolsContent(
-                                    tools = filteredUiState.tools,
-                                    onToggleTool = actions.onToggleTool,
-                                    mcpServers = filteredUiState.mcpServers,
-                                    onAddMcpServer = actions.onAddMcpServer,
-                                    onRemoveMcpServer = actions.onRemoveMcpServer,
-                                    onToggleMcpServer = actions.onToggleMcpServer,
-                                    onRefreshMcpServer = actions.onRefreshMcpServer,
-                                    showAddMcpServerDialog = filteredUiState.showAddMcpServerDialog,
-                                    onShowAddMcpServerDialog = actions.onShowAddMcpServerDialog,
-                                    onAddPopularMcpServer = actions.onAddPopularMcpServer,
-                                    skills = filteredUiState.skills,
-                                    onUninstallSkill = actions.onUninstallSkill,
-                                    showAddSkillDialog = filteredUiState.showAddSkillDialog,
-                                    onShowAddSkillDialog = actions.onShowAddSkillDialog,
-                                    onInstallGitHubSkill = actions.onInstallGitHubSkill,
-                                    onInstallBrowsedSkill = actions.onInstallBrowsedSkill,
-                                    isInstallingSkill = filteredUiState.isInstallingSkill,
-                                    skillInstallError = filteredUiState.skillInstallError,
-                                    browsableSkills = filteredUiState.browsableSkills,
-                                    isBrowsingSkills = filteredUiState.isBrowsingSkills,
-                                    browseSkillsFailed = filteredUiState.browseSkillsFailed,
-                                    showSkills = sandboxState.showSandbox,
-                                    isSandboxInstalled = sandboxState.sandboxInstalled,
-                                    onNavigateToSandbox = { actions.onSelectTab(SettingsTab.Sandbox) },
-                                )
-                            }
-
-                            SettingsTab.Sandbox -> {
-                                SandboxSettingsCard(
-                                    sandboxState = sandboxState,
-                                    onToggleSandbox = onToggleSandbox,
-                                    onSelectDistro = onSelectDistro,
-                                    onSetupSandbox = onSetupSandbox,
-                                    onCancelSandbox = onCancelSandbox,
-                                    onResetSandbox = onResetSandbox,
-                                    onInstallPackages = onInstallPackages,
-                                    onMigrateHome = onMigrateHome,
-                                )
-                            }
+                            Spacer(Modifier.height(16.dp))
                         }
 
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.weight(1f))
+
+                        BottomInfo()
                     }
-
-                    Spacer(Modifier.weight(1f))
-
-                    BottomInfo()
+                    VerticalScrollbarForScroll(
+                        scrollState = settingsScrollState,
+                        modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
+                    )
                 }
-                VerticalScrollbarForScroll(
-                    scrollState = settingsScrollState,
-                    modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight(),
-                )
             }
         }
         SnackbarHost(
@@ -422,6 +431,7 @@ private fun SettingsTabSelector(
                 ) {
                     Text(
                         text = when (tab) {
+                            SettingsTab.Logs -> stringResource(Res.string.settings_tab_logs)
                             SettingsTab.General -> stringResource(Res.string.settings_tab_general)
                             SettingsTab.Appearance -> "Appearance"
                             SettingsTab.Agent -> stringResource(Res.string.settings_tab_agent)

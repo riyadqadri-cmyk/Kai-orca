@@ -71,9 +71,10 @@ internal fun CodeFenceBlock(
             }
             HorizontalDivider(color = colorScheme.outline.copy(alpha = 0.2f))
             val scroll = rememberScrollState()
-            Box(Modifier.horizontalScroll(scroll).padding(12.dp)) {
+            Box(Modifier.fillMaxWidth().horizontalScroll(scroll).padding(12.dp)) {
                 Text(
                     text = highlighted,
+                    softWrap = false,
                     fontFamily = FontFamily.Monospace,
                     style = MaterialTheme.typography.bodyMedium,
                 )

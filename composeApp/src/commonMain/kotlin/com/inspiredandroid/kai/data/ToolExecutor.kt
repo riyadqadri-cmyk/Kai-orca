@@ -1,5 +1,6 @@
 package com.inspiredandroid.kai.data
 
+import com.inspiredandroid.kai.diagnostics.AppLog
 import com.inspiredandroid.kai.getAvailableTools
 import com.inspiredandroid.kai.getPlatformToolDefinitions
 import com.inspiredandroid.kai.network.tools.Tool
@@ -47,13 +48,18 @@ class ToolExecutor(
         arguments: String,
         conversationId: String? = null,
     ): String {
+        AppLog.info("Tool", "Starting $name")
         val tools = toolsProvider()
         val tool = tools.find { it.schema.name == name }
-            ?: return toolErrorJson("Unknown tool: $name")
+            ?: run {
+                AppLog.error("Tool", "Unknown tool: $name")
+                return toolErrorJson("Unknown tool: $name")
+            }
 
         val args = try {
             parseJsonToMap(arguments)
         } catch (e: Exception) {
+            AppLog.error("Tool", "Could not parse arguments for $name (${e::class.simpleName})")
             return toolErrorJson("Failed to parse arguments: ${e.message}")
         }
 
@@ -79,14 +85,19 @@ class ToolExecutor(
 
                 else -> buildJsonObject { put("result", result.toString()) }.toString()
             }
+            val failed = (result as? Map<*, *>)?.get("success") == false
+            if (failed) AppLog.error("Tool", "$name returned success=false") else AppLog.info("Tool", "Completed $name; result chars=${resultString.length}")
             truncateResult(resultString)
         } catch (e: TimeoutCancellationException) {
+            AppLog.error("Tool", "$name timed out after ${tool.timeout}")
             toolErrorJson("Tool '$name' timed out after ${tool.timeout}")
         } catch (e: CancellationException) {
             // Cooperative cancellation (user pressed stop) must propagate, not become a
             // fake tool result the loop would keep reasoning about.
+            AppLog.info("Tool", "Cancelled $name")
             throw e
         } catch (e: Exception) {
+            AppLog.error("Tool", "$name failed", e)
             toolErrorJson("Tool execution failed: ${e.message}")
         }
     }

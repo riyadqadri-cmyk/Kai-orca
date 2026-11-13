@@ -21,9 +21,12 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.inspiredandroid.kai.ui.dynamicui.FrozenSubmission
@@ -247,29 +250,62 @@ private fun ListItemRow(
 
 @Composable
 private fun TableBlock(block: Table) {
-    Column(Modifier.padding(vertical = 4.dp)) {
-        if (block.headers.any { it.isNotEmpty() }) {
-            Row {
-                block.headers.forEachIndexed { i, cell ->
+    val hasHeader = block.headers.any { it.isNotEmpty() }
+    val rows = (if (hasHeader) listOf(block.headers) else emptyList()) + block.rows
+    val columnCount = maxOf(block.headers.size, block.alignments.size, rows.maxOfOrNull { it.size } ?: 0)
+    if (columnCount == 0 || rows.isEmpty()) return
+
+    // Measure each column against all of its cells, then scroll the whole grid.
+    // Each row uses the same column widths and its tallest cell's height, including
+    // explicit line breaks. Wide cells never squeeze the rest of the table.
+    Layout(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+            .horizontalScroll(rememberScrollState()),
+        content = {
+            rows.forEachIndexed { rowIndex, row ->
+                repeat(columnCount) { column ->
                     InlineContent(
-                        inlines = cell,
-                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold),
-                        textAlign = alignTextFor(block.alignments.getOrNull(i)),
-                        modifier = Modifier.weight(1f).padding(4.dp),
+                        inlines = row.getOrNull(column) ?: persistentListOf(),
+                        style = if (hasHeader && rowIndex == 0) {
+                            MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Bold)
+                        } else {
+                            MaterialTheme.typography.bodyLarge
+                        },
+                        textAlign = alignTextFor(block.alignments.getOrNull(column)),
+                        softWrap = false,
+                        modifier = Modifier.padding(8.dp),
                     )
                 }
             }
-            HorizontalDivider()
+            if (hasHeader) HorizontalDivider()
+        },
+    ) { measurables, constraints ->
+        val cells = measurables.take(rows.size * columnCount)
+        val widths = IntArray(columnCount) { column ->
+            rows.indices.maxOf { row ->
+                cells[row * columnCount + column].maxIntrinsicWidth(Constraints.Infinity)
+            }.coerceAtLeast(40.dp.roundToPx())
         }
-        for (row in block.rows) {
-            Row {
-                row.forEachIndexed { i, cell ->
-                    InlineContent(
-                        inlines = cell,
-                        style = MaterialTheme.typography.bodyLarge,
-                        textAlign = alignTextFor(block.alignments.getOrNull(i)),
-                        modifier = Modifier.weight(1f).padding(4.dp),
-                    )
+        val placeables = cells.mapIndexed { index, cell ->
+            cell.measure(Constraints.fixedWidth(widths[index % columnCount]))
+        }
+        val heights = IntArray(rows.size) { row ->
+            (0 until columnCount).maxOf { column -> placeables[row * columnCount + column].height }
+        }
+        val width = constraints.constrainWidth(widths.sum())
+        val divider = if (hasHeader) measurables.last().measure(Constraints.fixedWidth(width)) else null
+        layout(width, heights.sum() + (divider?.height ?: 0)) {
+            var y = 0
+            rows.indices.forEach { row ->
+                var x = 0
+                repeat(columnCount) { column ->
+                    placeables[row * columnCount + column].placeRelative(x, y)
+                    x += widths[column]
+                }
+                y += heights[row]
+                if (row == 0 && divider != null) {
+                    divider.placeRelative(0, y)
+                    y += divider.height
                 }
             }
         }

@@ -5,9 +5,13 @@ package com.inspiredandroid.kai.ui.settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -48,9 +53,11 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -170,6 +177,20 @@ fun TerminalContent(
     // Appends to the end are safe because they don't invalidate existing ids.
     val isInteractingWithOutput = remember { mutableStateOf(false) }
 
+    val horizontalScroll = androidx.compose.runtime.key(selectedSessionId) { rememberScrollState() }
+    val textMeasurer = rememberTextMeasurer(cacheSize = MAX_OUTPUT_LINES * 2)
+    val density = LocalDensity.current
+    val transcript = outputLines.toList()
+    val outputWidthPx = remember(transcript, textMeasurer, density) {
+        transcript.maxOfOrNull { line ->
+            val text = when (line) {
+                is TerminalLine.Command -> "$ ${line.text}"
+                is TerminalLine.Output -> parseAnsiToAnnotatedString(line.text, Color.Unspecified).text
+                is TerminalLine.Error -> parseAnsiToAnnotatedString(line.text, Color.Unspecified).text
+            }
+            textMeasurer.measure(text, style = monoStyle(13.sp), softWrap = false).size.width
+        } ?: 0
+    }
     val colors = terminalColors(darkBackground)
     // Which Linux the user is actually typing into — the header used to say
     // "Alpine Linux" unconditionally.
@@ -297,56 +318,65 @@ fun TerminalContent(
                     }
                 },
         ) {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                state = listState,
-            ) {
-                if (outputLines.isEmpty()) {
-                    item {
-                        Text(
-                            text = stringResource(Res.string.terminal_help_text),
-                            style = monoStyle(13.sp, colors.dimText),
-                        )
-                    }
-                }
-                items(
-                    items = outputLines,
-                    contentType = { it::class },
-                ) { line ->
-                    when (line) {
-                        is TerminalLine.Command -> {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = "$ ${line.text}",
-                                style = monoStyle(13.sp, colors.prompt),
-                            )
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val outputWidth = maxOf(maxWidth, with(density) { outputWidthPx.toDp() } + 32.dp)
+                Box(Modifier.fillMaxSize().horizontalScroll(horizontalScroll)) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .width(outputWidth)
+                            .fillMaxHeight()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        state = listState,
+                    ) {
+                        if (outputLines.isEmpty()) {
+                            item {
+                                Text(
+                                    text = stringResource(Res.string.terminal_help_text),
+                                    style = monoStyle(13.sp, colors.dimText),
+                                )
+                            }
                         }
+                        items(
+                            items = outputLines,
+                            contentType = { it::class },
+                        ) { line ->
+                            when (line) {
+                                is TerminalLine.Command -> {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = "$ ${line.text}",
+                                        style = monoStyle(13.sp, colors.prompt),
+                                        softWrap = false,
+                                    )
+                                }
 
-                        is TerminalLine.Output -> {
-                            Text(
-                                text = parseAnsiToAnnotatedString(line.text, colors.text),
-                                style = monoStyle(13.sp),
-                            )
-                        }
+                                is TerminalLine.Output -> {
+                                    Text(
+                                        text = parseAnsiToAnnotatedString(line.text, colors.text),
+                                        style = monoStyle(13.sp),
+                                        softWrap = false,
+                                    )
+                                }
 
-                        is TerminalLine.Error -> {
-                            Text(
-                                text = parseAnsiToAnnotatedString(line.text, colors.error),
-                                style = monoStyle(13.sp),
-                            )
+                                is TerminalLine.Error -> {
+                                    Text(
+                                        text = parseAnsiToAnnotatedString(line.text, colors.error),
+                                        style = monoStyle(13.sp),
+                                        softWrap = false,
+                                    )
+                                }
+                            }
                         }
-                    }
-                }
-                if (isRunning) {
-                    item {
-                        Spacer(Modifier.height(4.dp))
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = colors.prompt,
-                        )
+                        if (isRunning) {
+                            item {
+                                Spacer(Modifier.height(4.dp))
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = colors.prompt,
+                                )
+                            }
+                        }
                     }
                 }
             }
