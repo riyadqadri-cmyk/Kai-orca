@@ -406,7 +406,7 @@ class Requests {
     } catch (e: OpenAICompatibleApiException) {
         Result.failure(e)
     } catch (e: Exception) {
-        AppLog.error("Provider", "${service.displayName} request/decoding failure", e)
+        AppLog.error("Provider", "${Service.DeepSeek.displayName} request/decoding failure", e)
         Result.failure(mapOpenAICompatibleException(e))
     }
 
