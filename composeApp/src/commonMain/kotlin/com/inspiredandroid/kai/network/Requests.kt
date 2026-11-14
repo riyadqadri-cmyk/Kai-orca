@@ -23,6 +23,8 @@ import com.inspiredandroid.kai.network.dtos.openaicompatible.OpenAICompatibleMod
 import com.inspiredandroid.kai.network.dtos.openairesponses.OpenAIResponsesRequestDto
 import com.inspiredandroid.kai.network.dtos.openairesponses.OpenAIResponsesResponseDto
 import com.inspiredandroid.kai.network.tools.Tool
+import io.ktor.client.HttpClient
+import io.ktor.client.HttpClientConfig
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpResponseValidator
 import io.ktor.client.plugins.HttpTimeout
@@ -40,18 +42,21 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
+import io.ktor.http.Url
 import io.ktor.http.content.TextContent
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.time.Duration.Companion.seconds
@@ -133,9 +138,31 @@ private inline fun <T> openAICompatibleResult(block: () -> Result<T>): Result<T>
     Result.failure(OpenAICompatibleConnectionException())
 }
 
-class Requests {
+class Requests(
+    clientFactory: (HttpClientConfig<*>.() -> Unit) -> HttpClient = { httpClient(it) },
+) {
+    // Account-specific metadata is needed for G4F ids such as srv_123:auto.
+    private val modelMetadata = MutableStateFlow<Map<Triple<String, String, String>, List<OpenAICompatibleModelResponseDto.Model>>>(emptyMap())
 
-    private val defaultClient = httpClient {
+    private fun metadataKey(service: Service, credentials: ServiceCredentials) = Triple(service.id, credentials.baseUrl.trimEnd('/'), credentials.apiKey)
+
+    private suspend fun reasoningFor(service: Service, credentials: ServiceCredentials, enabled: Boolean): OpenAICompatibleChatRequestDto.Reasoning? {
+        val direct = openRouterReasoning(service == Service.OpenRouter, credentials.baseUrl, credentials.modelId, enabled)
+        if (direct != null) return direct
+        val host = runCatching { Url(credentials.baseUrl).host.lowercase() }.getOrDefault("")
+        if (service != Service.OpenAICompatible || (host != "g4f.space" && !host.endsWith(".g4f.space") && host != "g4f.dev")) return null
+        val models = modelMetadata.value[metadataKey(service, credentials)]
+            ?: withTimeoutOrNull(10.seconds) { getOpenAICompatibleModels(service, credentials).getOrNull()?.data }.orEmpty()
+        val model = models.firstOrNull { it.id == credentials.modelId }
+        val hint = listOfNotNull(model?.owned_by, model?.name, model?.label).joinToString(" ")
+        val config = openRouterReasoning(false, credentials.baseUrl, credentials.modelId, enabled, hint)
+        if (config == null && enabled) AppLog.info("Provider", "No identified OpenRouter route for ${credentials.modelId}; keeping its default reasoning parameters")
+        return config
+    }
+
+    internal suspend fun usesOpenRouterReasoning(service: Service, credentials: ServiceCredentials): Boolean = reasoningFor(service, credentials, enabled = false) != null
+
+    private val defaultClient = clientFactory {
         install(ContentNegotiation) {
             json(
                 Json {
@@ -259,6 +286,7 @@ class Requests {
         deepSeekThinkingEnabled: Boolean = false,
     ): Result<OpenAICompatibleChatResponseDto> = try {
         val apiKey = getApiKeyOrThrow(service, credentials)
+        val reasoningConfig = reasoningFor(service, credentials, deepSeekThinkingEnabled)
         val model = credentials.modelId.ifEmpty { null }
         AppLog.info("Provider", "${service.displayName} model=${model ?: "default"}; messages=${messages.size}; tools=${tools.size}")
         val url = resolveUrl(service, credentials, service.chatUrl)
@@ -281,6 +309,7 @@ class Requests {
                         } else {
                             null
                         },
+                        reasoning = reasoningConfig,
                     ),
                 )
             }
@@ -301,26 +330,23 @@ class Requests {
         Result.failure(mapOpenAICompatibleException(e))
     }
 
-    /** DeepSeek SSE transport. Delivers accumulated text/reasoning to [onUpdate] as it arrives.
-     * The completed DTO preserves tool calls so the existing tool loop can execute them.
-     */
-    suspend fun deepSeekChatStream(
+    /** OpenAI-compatible SSE transport, including G4F/OpenRouter and DeepSeek. */
+    suspend fun openAICompatibleChatStream(
+        service: Service,
         credentials: ServiceCredentials,
         messages: List<OpenAICompatibleChatRequestDto.Message>,
         tools: List<Tool> = emptyList(),
         sessionId: String? = null,
         onUpdate: (String, String) -> Unit = { _, _ -> },
         thinkingEnabled: Boolean = false,
+        requestTimeoutMs: Long? = null,
     ): Result<OpenAICompatibleChatResponseDto> = try {
-        val service = Service.DeepSeek
         val apiKey = getApiKeyOrThrow(service, credentials)
+        val reasoningConfig = reasoningFor(service, credentials, thinkingEnabled)
         val url = resolveUrl(service, credentials, service.chatUrl)
-        val content = StringBuilder()
-        val reasoning = StringBuilder()
-        data class PendingCall(var id: String = "", var name: String = "", val args: StringBuilder = StringBuilder())
-        val calls = mutableMapOf<Int, PendingCall>()
-        var receivedDone = false
-        defaultClient.preparePost(url) {
+        AppLog.info("Provider", "${service.displayName}/${credentials.modelId}: streaming; thinking requested=$thinkingEnabled")
+        val result = defaultClient.preparePost(url) {
+            applyTimeout(requestTimeoutMs)
             contentType(ContentType.Application.Json)
             header("Accept", "text/event-stream")
             apiKey?.let { bearerAuth(it) }
@@ -331,84 +357,70 @@ class Requests {
                     model = credentials.modelId.ifEmpty { null },
                     tools = tools.toRequestTools { it.toRequestTool() },
                     stream = true,
-                    thinking = OpenAICompatibleChatRequestDto.Thinking(if (thinkingEnabled) "enabled" else "disabled"),
+                    thinking = if (service == Service.DeepSeek) {
+                        OpenAICompatibleChatRequestDto.Thinking(if (thinkingEnabled) "enabled" else "disabled")
+                    } else {
+                        null
+                    },
+                    reasoning = reasoningConfig,
                 ),
             )
         }.execute { response ->
-            if (!response.status.isSuccess()) {
-                handleOpenAICompatibleError(service, credentials, response)
+            if (!response.status.isSuccess()) handleOpenAICompatibleError(service, credentials, response)
+            // Some compatible servers ignore stream=true. Preserve their regular JSON answer.
+            if (response.headers["Content-Type"].orEmpty().contains("application/json", ignoreCase = true)) {
+                AppLog.info("Provider", "${service.displayName} returned a non-streaming JSON response")
+                return@execute response.body<OpenAICompatibleChatResponseDto>()
             }
+            val accumulator = OpenAIChatStreamAccumulator()
             val channel = response.bodyAsChannel()
             val event = StringBuilder()
-            suspend fun processEvent() {
-                val raw = event.toString()
+            fun processEvent() {
+                val payload = event.toString()
                 event.clear()
-                if (raw.isBlank()) return
-                val payload = raw.lines().filter { it.startsWith("data:") }
-                    .joinToString("\n") { it.removePrefix("data:").trimStart() }
-                if (payload.isBlank()) return
-                if (payload == "[DONE]") {
-                    receivedDone = true
-                    return
-                }
-                val obj = Json.parseToJsonElement(payload).jsonObject
-                if (obj["error"] != null) throw OpenAICompatibleGenericException("DeepSeek streaming error: ${obj["error"]}")
-                val choice = (obj["choices"] as? JsonArray)?.firstOrNull()?.jsonObject ?: return
-                val delta = choice["delta"]?.jsonObject ?: return
-                val textPart = (delta["content"] as? JsonPrimitive)?.contentOrNull.orEmpty()
-                val reasonPart = (delta["reasoning_content"] as? JsonPrimitive)?.contentOrNull.orEmpty()
-                content.append(textPart)
-                reasoning.append(reasonPart)
-                (delta["tool_calls"] as? JsonArray)?.forEach { element ->
-                    val part = element.jsonObject
-                    val index = (part["index"] as? JsonPrimitive)?.intOrNull ?: return@forEach
-                    val call = calls.getOrPut(index) { PendingCall() }
-                    (part["id"] as? JsonPrimitive)?.contentOrNull?.let { call.id = it }
-                    val function = part["function"]?.jsonObject
-                    (function?.get("name") as? JsonPrimitive)?.contentOrNull?.let { call.name += it }
-                    (function?.get("arguments") as? JsonPrimitive)?.contentOrNull?.let { call.args.append(it) }
-                }
-                if (textPart.isNotEmpty() || reasonPart.isNotEmpty()) onUpdate(content.toString(), reasoning.toString())
+                if (accumulator.accept(payload)) onUpdate(accumulator.content, accumulator.reasoning)
             }
-            while (true) {
+            while (!accumulator.done) {
                 val line = channel.readUTF8Line() ?: break
-                if (line.isBlank()) {
+                if (line.isEmpty()) {
                     processEvent()
                 } else if (line.startsWith("data:")) {
-                    event.append(line).append('\n')
+                    if (event.isNotEmpty()) event.append('\n')
+                    event.append(line.removePrefix("data:").removePrefix(" "))
                 }
             }
-            processEvent()
+            if (!accumulator.done) processEvent()
+            accumulator.response()
         }
-        if (!receivedDone) throw OpenAICompatibleConnectionException()
-        val toolCalls = calls.toSortedMap().values.map { call ->
-            OpenAICompatibleChatResponseDto.ToolCall(
-                id = call.id,
-                function = OpenAICompatibleChatResponseDto.FunctionCall(call.name, call.args.toString()),
-            )
-        }
-        Result.success(
-            OpenAICompatibleChatResponseDto(
-                listOf(
-                    OpenAICompatibleChatResponseDto.Choice(
-                        OpenAICompatibleChatResponseDto.Choice.Message(
-                            role = "assistant",
-                            content = content.toString(),
-                            reasoningContent = reasoning.toString().takeIf { it.isNotBlank() },
-                            toolCalls = toolCalls.takeIf { it.isNotEmpty() },
-                        ),
-                    ),
-                ),
-            ),
-        )
+        AppLog.info("Provider", "${service.displayName}/${credentials.modelId}: stream completed")
+        Result.success(result)
     } catch (e: CancellationException) {
+        AppLog.info("Provider", "${service.displayName} stream cancelled")
         throw e
     } catch (e: OpenAICompatibleApiException) {
+        AppLog.error("Provider", "${service.displayName} stream failed", e)
         Result.failure(e)
     } catch (e: Exception) {
-        AppLog.error("Provider", "${Service.DeepSeek.displayName} request/decoding failure", e)
+        AppLog.error("Provider", "${service.displayName} stream transport/decoding failure", e)
         Result.failure(mapOpenAICompatibleException(e))
     }
+
+    suspend fun deepSeekChatStream(
+        credentials: ServiceCredentials,
+        messages: List<OpenAICompatibleChatRequestDto.Message>,
+        tools: List<Tool> = emptyList(),
+        sessionId: String? = null,
+        onUpdate: (String, String) -> Unit = { _, _ -> },
+        thinkingEnabled: Boolean = false,
+    ): Result<OpenAICompatibleChatResponseDto> = openAICompatibleChatStream(
+        Service.DeepSeek,
+        credentials,
+        messages,
+        tools,
+        sessionId,
+        onUpdate,
+        thinkingEnabled,
+    )
 
     /**
      * OpenAI Responses API (`POST /v1/responses`). Used for the model families whose function
@@ -469,12 +481,13 @@ class Requests {
             applySessionHeader(service, credentials, sessionId = null)
         }
         if (response.status.isSuccess()) {
-            if (service.modelsResponseIsArray) {
-                val models: List<OpenAICompatibleModelResponseDto.Model> = response.body()
-                Result.success(OpenAICompatibleModelResponseDto(data = models))
+            val models = if (service.modelsResponseIsArray) {
+                OpenAICompatibleModelResponseDto(data = response.body())
             } else {
-                Result.success(response.body())
+                response.body<OpenAICompatibleModelResponseDto>()
             }
+            modelMetadata.update { it + (metadataKey(service, credentials) to models.data) }
+            Result.success(models)
         } else {
             handleOpenAICompatibleError(service, credentials, response)
         }

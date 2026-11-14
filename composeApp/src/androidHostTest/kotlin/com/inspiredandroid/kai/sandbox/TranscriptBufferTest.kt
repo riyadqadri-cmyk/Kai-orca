@@ -27,6 +27,32 @@ class TranscriptBufferTest {
     }
 
     @Test
+    fun `lazily created transcript is readable by the snapshot that requested it`() {
+        val snapshot = Snapshot.takeMutableSnapshot()
+        try {
+            snapshot.enter {
+                val buffer = TranscriptBuffer(listOf(TerminalLine.Output("restored")), maxLines = 10)
+                assertEquals(listOf("restored"), buffer.transcript.toList().map { it.text })
+            }
+        } finally {
+            snapshot.dispose()
+        }
+    }
+
+    @Test
+    fun `new transcript is readable from an already open read snapshot`() {
+        val snapshot = Snapshot.takeSnapshot()
+        try {
+            val buffer = TranscriptBuffer(listOf(TerminalLine.Output("restored")), maxLines = 10)
+            snapshot.enter {
+                assertEquals(listOf("restored"), buffer.transcript.toList().map { it.text })
+            }
+        } finally {
+            snapshot.dispose()
+        }
+    }
+
+    @Test
     fun `background appends are committed in one batch on the ui dispatcher`() {
         val dispatcher = StandardTestDispatcher()
         val scope = TestScope(dispatcher)

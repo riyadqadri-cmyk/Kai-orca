@@ -22,6 +22,11 @@ object AppLog {
         record("ERROR", tag, message + (cause?.let { "\n${it.stackTraceToString()}" } ?: ""))
     }
 
+    /** The persistence observer saves the empty buffer; later events continue logging. */
+    fun clear() {
+        _text.value = ""
+    }
+
     fun restore(previous: String) {
         _text.value = bounded(redact(previous))
     }

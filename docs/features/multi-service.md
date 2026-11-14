@@ -34,7 +34,7 @@ When Free is the only path and the user hits Free FAST/EXPERT rate or quota limi
 
 ## Diagnostics
 
-Settings → Logs is a single selectable, scrollable text box available in release builds. It shows timestamped request metadata, HTTP statuses and timing, provider error bodies, retry delays, context skips, fallback attempts, completion, and exhaustion. Free FAST and EXPERT are identified by their mode. Transport and decoding failures retain their underlying exception details. This adds observability without changing routing, retry policy, or provider configuration.
+Settings → Logs is a selectable, scrollable text box with a Clear logs button, available in release builds. Clearing removes the current buffer from the screen and saved diagnostics; new events continue to appear. It shows timestamped request metadata, HTTP statuses and timing, provider error bodies, retry delays, context skips, fallback attempts, completion, and exhaustion. Free FAST and EXPERT are identified by their mode. Transport and decoding failures retain their underlying exception details. This adds observability without changing routing, retry policy, or provider configuration.
 
 Free requests go through a remote gateway: logs can show only the upstream failure details that gateway returns. Internal provider failures hidden by the gateway cannot be reconstructed on the phone.
 

@@ -1,6 +1,6 @@
 # Reasoning Content Handling
 
-**Last verified:** 2026-10-02
+**Last verified:** 2026-11-14
 
 Reasoning-capable models (DeepSeek R1, GLM thinking, Qwen thinking, Kimi thinking, Magistral, gpt-oss, etc.) return their chain-of-thought separately from the final answer. Kai handles reasoning along two axes: **wire-side** (whether to echo the trace back to the provider on the next request) and **display-side** (whether to show it to the user in the chat UI). When a turn also contains `tool_calls`, some providers require the chain-of-thought to be echoed back to preserve reasoning continuity across the tool round-trip — and others strictly reject the same field. This page documents what each provider does, what Kai sends, and where we trade fidelity for simplicity.
 
@@ -68,7 +68,7 @@ Documented here so future work has a starting point. None of these are bugs toda
 - **MiniMax M2 split mode** — alternative path uses `reasoning_details` instead.
 - **Z.AI standard `clear_thinking: false`** — without this paired request flag, Preserved Thinking is off and our echo is a no-op.
 - **Fireworks `reasoning_history: "preserved"`** — without this paired request flag, Fireworks does not actually preserve reasoning across turns.
-- **Cerebras `reasoning` field** — Cerebras uses `reasoning`, not `reasoning_content`. Mode is currently `NONE` because we have no `reasoning` field on the request DTO. Adding it would unlock GLM-4.7 multi-step on Cerebras.
+- **Cerebras `reasoning` field** — Cerebras uses `reasoning`, not `reasoning_content`. Mode is currently `NONE` because we have no assistant-message `reasoning` field on the request DTO. Adding it would unlock GLM-4.7 multi-step on Cerebras.
 - **Per-model dispatch** — the reasoning request mode is per-service. Moonshot is set to `REASONING_CONTENT` because of Kimi `k2.6`, but the flag is inert for older Kimi thinking models. Per-model precision would tighten this.
 
 Adding any of these means either adding new reasoning request modes, adding fields to the OpenAI-compatible request body, adding paired-flag plumbing on the request side, or moving to a per-model handler. None of these have been done because the current binary dispatch covers all known live-broken cases.
@@ -88,3 +88,13 @@ Adding any of these means either adding new reasoning request modes, adding fiel
 | `composeApp/src/commonMain/.../data/Conversation.kt` | `Conversation.Message.reasoningContent` — persisted reasoning trace for round-tripping across app restarts |
 | `composeApp/src/commonMain/.../ui/chat/composables/BotMessage.kt` | Renders the dim-blockquote reasoning section above the answer when `reasoningContent` is supplied |
 | `composeApp/src/commonMain/.../ui/chat/ChatScreen.kt` | Groups all reasoning segments in a response under the answer-bearing assistant message; renders standalone thinking-only bubbles for in-flight turns |
+
+| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/OpenAIChatStreamAccumulator.kt` | Assembles streamed answers, reasoning, and complete tool calls; rejects truncated output. |
+| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/OpenRouterReasoning.kt` | OpenRouter reasoning request configuration and gateway route recognition. |
+| `composeApp/src/commonTest/kotlin/com/inspiredandroid/kai/network/RequestsStreamingTest.kt` | HTTP-level streaming, reasoning, cancellation, metadata, and fallback-format tests. |
+
+## Streaming controls
+
+The chat Thinking switch applies to DeepSeek and OpenRouter, including OpenRouter model routes identified by their ids or provider metadata on a custom gateway such as G4F. Requests use the destination's native reasoning control. OpenRouter's automatic router may choose different models and effort levels; a switch cannot guarantee a visible trace from every model or disable a model whose reasoning is mandatory. Any reasoning text the provider returns is shown separately from the answer, including when it arrives before the first answer token.
+
+OpenRouter routes through a custom gateway also preserve returned reasoning on assistant tool-call turns, so the next request can echo it back when a reasoning model requires it.

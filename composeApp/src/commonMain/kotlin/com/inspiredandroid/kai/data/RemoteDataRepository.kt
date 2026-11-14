@@ -805,8 +805,8 @@ class RemoteDataRepository(
                 }
                 val sessionId = activeConversationId()
                 val response = call {
-                    if (service == Service.DeepSeek && liveHistory != null) {
-                        streamDeepSeekVisible(credentials, openAIMessages, emptyList(), liveHistory, sessionId)
+                    if (service in setOf(Service.DeepSeek, Service.OpenAICompatible, Service.OpenRouter) && liveHistory != null) {
+                        streamCompatibleVisible(service, credentials, openAIMessages, emptyList(), liveHistory, sessionId, requestTimeoutMs)
                     } else {
                         requests.openAICompatibleChat(service, credentials, openAIMessages, sessionId = sessionId, requestTimeoutMs = requestTimeoutMs, deepSeekThinkingEnabled = appSettings.isDeepSeekThinkingEnabled()).getOrThrow()
                     }
@@ -1123,17 +1123,19 @@ class RemoteDataRepository(
         }
     }
 
-    /** A temporary assistant message for live DeepSeek tokens. Never persisted or sent upstream. */
-    private suspend fun streamDeepSeekVisible(
+    /** A temporary assistant message for live compatible-provider tokens. Never persisted or sent upstream. */
+    private suspend fun streamCompatibleVisible(
+        service: Service,
         credentials: ServiceCredentials,
         messages: List<com.inspiredandroid.kai.network.dtos.openaicompatible.OpenAICompatibleChatRequestDto.Message>,
         tools: List<Tool>,
         history: MutableStateFlow<List<History>>,
         sessionId: String?,
+        requestTimeoutMs: Long? = null,
     ): com.inspiredandroid.kai.network.dtos.openaicompatible.OpenAICompatibleChatResponseDto {
         val previewId = Uuid.random().toString()
         try {
-            return requests.deepSeekChatStream(credentials, messages, tools, sessionId, onUpdate = { content, reasoning ->
+            return requests.openAICompatibleChatStream(service, credentials, messages, tools, sessionId, onUpdate = { content, reasoning ->
                 // The existing UI renders History StateFlow; keep this as a transient entry.
                 // Reasoning-only chunks remain visible until answer text begins.
                 val preview = History(
@@ -1146,7 +1148,7 @@ class RemoteDataRepository(
                 history.update { entries ->
                     entries.filterNot { it.id == previewId } + preview
                 }
-            }, thinkingEnabled = appSettings.isDeepSeekThinkingEnabled()).getOrThrow()
+            }, thinkingEnabled = appSettings.isDeepSeekThinkingEnabled(), requestTimeoutMs = requestTimeoutMs).getOrThrow()
         } finally {
             history.update { entries -> entries.filterNot { it.id == previewId } }
         }
@@ -1160,6 +1162,11 @@ class RemoteDataRepository(
         systemPrompt: String? = null,
         history: MutableStateFlow<List<History>> = chatHistory,
     ): AssistantTurn {
+        val reasoningMode = if (requests.usesOpenRouterReasoning(service, credentials)) {
+            Service.OpenRouter.reasoningRequestMode
+        } else {
+            service.reasoningRequestMode
+        }
         val contextWindowTokens = ModelCatalog.estimateContextWindow(credentials.modelId)
         val declaredToolNames = tools.map { it.schema.name }.toSet()
         // GPT-5.6 and friends reject function tools on chat completions; the same messages are
@@ -1168,7 +1175,7 @@ class RemoteDataRepository(
         val useResponsesApi = requiresResponsesApi(service, credentials.modelId, credentials.baseUrl)
         val strategy = object : ToolLoopStrategy {
             override suspend fun chat(loopHistory: List<History>, systemPrompt: String?): LoopChatResult {
-                val msgs = trimMessagesForContext(buildOpenAIMessages(service, loopHistory, systemPrompt, credentials.modelId, declaredToolNames), contextWindowTokens)
+                val msgs = trimMessagesForContext(buildOpenAIMessages(service, loopHistory, systemPrompt, credentials.modelId, declaredToolNames, reasoningMode), contextWindowTokens)
                 if (useResponsesApi) {
                     val response = retryApiCall {
                         requests.openAIResponses(service, credentials, toResponsesInput(msgs), tools).getOrThrow()
@@ -1191,8 +1198,8 @@ class RemoteDataRepository(
                 }
                 val sessionId = activeConversationId()
                 val response = retryApiCall {
-                    if (service == Service.DeepSeek) {
-                        streamDeepSeekVisible(credentials, msgs, tools, history, sessionId)
+                    if (service in setOf(Service.DeepSeek, Service.OpenAICompatible, Service.OpenRouter)) {
+                        streamCompatibleVisible(service, credentials, msgs, tools, history, sessionId)
                     } else {
                         requests.openAICompatibleChat(service, credentials, msgs, tools, sessionId = sessionId).getOrThrow()
                     }
@@ -1225,7 +1232,7 @@ class RemoteDataRepository(
 
             override suspend fun bailout(history: List<History>, systemPrompt: String?, reason: BailoutReason): String {
                 // Bailout sends no tools — strip historic tool_calls to satisfy strict validators.
-                val msgs = trimMessagesForContext(buildOpenAIMessages(service, history, systemPrompt, credentials.modelId, declaredToolNames = emptySet()), contextWindowTokens)
+                val msgs = trimMessagesForContext(buildOpenAIMessages(service, history, systemPrompt, credentials.modelId, declaredToolNames = emptySet(), reasoningMode = reasoningMode), contextWindowTokens)
                 return makeFinalCallWithoutTools(service, credentials, msgs, reason, useResponsesApi)
             }
         }
@@ -1484,7 +1491,7 @@ class RemoteDataRepository(
         }
         val sessionId = activeConversationId()
         val response = retryApiCall {
-            requests.openAICompatibleChat(service, credentials, bailoutMessages, sessionId = sessionId).getOrThrow()
+            requests.openAICompatibleChat(service, credentials, bailoutMessages, sessionId = sessionId, deepSeekThinkingEnabled = appSettings.isDeepSeekThinkingEnabled()).getOrThrow()
         }
         return response.choices.firstOrNull()?.message?.effectiveContent ?: ""
     }

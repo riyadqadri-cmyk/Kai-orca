@@ -1,6 +1,5 @@
 package com.inspiredandroid.kai.sandbox
 
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.inspiredandroid.kai.TerminalLine
@@ -28,12 +27,13 @@ internal class TranscriptBuffer(
     private val maxLines: Int,
     private val uiDispatcher: CoroutineDispatcher = Dispatchers.Main,
 ) {
-    // Created in the global snapshot: the owning shell is created lazily and the
-    // first caller can be a composition. A state object created inside a
-    // composition snapshot that is never applied stays unreadable forever
-    // ("Reading a state that was created after the snapshot was taken").
+    // Lazy creation can happen inside an older composition snapshot. Allocating
+    // directly in the global snapshot makes the new list unreadable to that
+    // caller. A detached mutable snapshot retains an initial record for older
+    // readers; seed it at construction so restored lines are in that record too.
+    // Apply independently of the calling composition, which may be discarded.
     val transcript: SnapshotStateList<TerminalLine> = Snapshot.global {
-        mutableStateListOf<TerminalLine>().apply { addAll(initialLines) }
+        Snapshot.withMutableSnapshot { SnapshotStateList(initialLines.size) { initialLines[it] } }
     }
 
     private val scope = CoroutineScope(SupervisorJob() + uiDispatcher)

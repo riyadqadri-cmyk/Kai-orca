@@ -4,6 +4,12 @@
 
 Kai's chat system manages the message history, conversation persistence, file attachments, and speech output. Conversations are service-independent — switching providers does not affect which conversation is loaded or restored. Multiple conversations are persisted and browsable via a history sheet.
 
+## Streaming and thinking
+
+Visible chat requests through DeepSeek, OpenRouter, and custom OpenAI-compatible connections (including G4F) display answer text as it arrives. Returned reasoning appears while the model thinks and is kept separate from the final answer. Stopping, retrying, or switching to a fallback removes the temporary response; completed responses are saved once. Tool calls are assembled fully before execution. A server that returns ordinary JSON instead of a stream still produces a normal completed answer.
+
+The existing Thinking switch also requests reasoning for OpenRouter routes, including an explicit OpenRouter model selected through G4F. DeepSeek keeps its own request format. OpenRouter receives an on/off reasoning preference with reasoning text included; this is a preference, not a guarantee that an automatic router selects a reasoning model or that mandatory reasoning can be disabled. Responses API routes and other provider families retain their existing behavior.
+
 ## Wide content
 
 Normal prose wraps to the chat width. Fenced code preserves indentation and explicit newlines, with a horizontal swipe for long lines. Markdown tables share content-sized column widths across every row and scroll horizontally as a whole; cells only break at explicit newlines. This also applies inside lists and quotations.
@@ -153,3 +159,5 @@ Multiple files can be attached to a single prompt. Each file is added one at a t
 | `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/MarkdownRenderer.kt` | Content-sized table columns with shared horizontal scrolling. |
 | `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/CodeFenceBlock.kt` | Non-wrapping, horizontally scrollable fenced code. |
 | `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/ui/markdown/InlineContent.kt` | Inline rendering with wrapping enabled for prose and disabled for table cells. |
+| `composeApp/src/commonMain/kotlin/com/inspiredandroid/kai/network/OpenAIChatStreamAccumulator.kt` | Streamed answer/reasoning and tool-call assembly. |
+| `composeApp/src/commonTest/kotlin/com/inspiredandroid/kai/network/OpenAIChatStreamAccumulatorTest.kt` | Stream completion, truncation, reasoning, and fragmented tool-call regression tests. |

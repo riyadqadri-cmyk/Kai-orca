@@ -12,9 +12,14 @@ data class OpenAICompatibleChatRequestDto(
     val stream: Boolean? = null,
     // DeepSeek chat-completions mode control; omitted for other providers.
     val thinking: Thinking? = null,
+    val reasoning: Reasoning? = null,
 ) {
     @Serializable
     data class Thinking(val type: String)
+
+    @Serializable
+    data class Reasoning(val enabled: Boolean, val exclude: Boolean = false)
+
     @Serializable
     data class Message(
         val role: String, // "system", "user", "assistant", "tool"

@@ -21,5 +21,7 @@ data class OpenAICompatibleModelResponseDto(
         val context_length: Long? = null,
         val isSelected: Boolean = false,
         val type: String? = null,
+        /** G4F public-server models can use opaque ids with a separate provider label. */
+        val label: String? = null,
     )
 }

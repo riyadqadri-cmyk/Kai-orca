@@ -23,7 +23,9 @@ internal val DiagnosticLogging = createClientPlugin("DiagnosticLogging") {
         val elapsed = request.attributes.getOrNull(startedAt)?.elapsedNow()?.inWholeMilliseconds
         val summary = "${request.method.value} ${request.url.host}${request.url.encodedPath} -> HTTP ${response.status.value} (${elapsed ?: "?"} ms)"
         if (response.status.isSuccess()) {
-            AppLog.info("HTTP", summary)
+            val routedModel = response.headers["x-model"]
+            val provider = response.headers["x-provider"]
+            AppLog.info("HTTP", "$summary; model=${routedModel ?: "unreported"}; provider=${provider ?: "unreported"}")
         } else {
             val requestId = response.headers["x-request-id"] ?: response.headers["cf-ray"]
             val retryAfter = response.headers["retry-after"]

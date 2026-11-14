@@ -62,4 +62,16 @@ class AppLogTest {
         AppLog.restore("old\n".repeat(AppLog.MAX_CHARS))
         assertTrue(AppLog.text.value.length <= AppLog.MAX_CHARS)
     }
+
+    @Test
+    fun clearRemovesOldEntriesAndLoggingContinuesWithRedaction() {
+        AppLog.info("Test", "old-entry")
+        AppLog.registerSecret("clear-test-secret")
+        AppLog.clear()
+        assertEquals("", AppLog.text.value)
+        AppLog.info("Test", "new-entry clear-test-secret")
+        assertFalse(AppLog.text.value.contains("old-entry"))
+        assertFalse(AppLog.text.value.contains("clear-test-secret"))
+        assertTrue(AppLog.text.value.contains("new-entry"))
+    }
 }

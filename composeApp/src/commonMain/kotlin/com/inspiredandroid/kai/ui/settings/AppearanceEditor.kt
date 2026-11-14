@@ -53,11 +53,17 @@ fun AppearanceEditor(settings: AppSettings = koinInject()) {
             Button(onClick = { settings.setThemeJson(draft) }, enabled = error == null) {
                 Text(text = "Apply", color = MaterialTheme.colorScheme.onPrimary)
             }
-            OutlinedButton(onClick = { draft = ThemeEditorConfig.DEFAULT; settings.setThemeJson("") }) {
+            OutlinedButton(onClick = {
+                draft = ThemeEditorConfig.DEFAULT
+                settings.setThemeJson("")
+            }) {
                 Text(text = "Reset", color = MaterialTheme.colorScheme.onSurface)
             }
             ImportedFontPicker(
-                onImported = { fontStatus = it; settings.notifyImportedFontChanged() },
+                onImported = {
+                    fontStatus = it
+                    settings.notifyImportedFontChanged()
+                },
                 onError = { fontStatus = it },
             )
         }
@@ -65,11 +71,14 @@ fun AppearanceEditor(settings: AppSettings = koinInject()) {
             Text(text = fontStatus, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            resetImportedFont { fontStatus = "Font removed"; settings.notifyImportedFontChanged() }
+            resetImportedFont {
+                fontStatus = "Font removed"
+                settings.notifyImportedFontChanged()
+            }
         }
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text(
-                text = "DeepSeek thinking mode",
+                text = "Thinking mode (DeepSeek / OpenRouter)",
                 modifier = Modifier.weight(1f),
                 color = MaterialTheme.colorScheme.onSurface,
             )

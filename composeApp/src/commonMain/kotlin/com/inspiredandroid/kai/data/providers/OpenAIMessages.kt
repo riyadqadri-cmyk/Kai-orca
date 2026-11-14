@@ -1,5 +1,6 @@
 package com.inspiredandroid.kai.data.providers
 
+import com.inspiredandroid.kai.data.ReasoningRequestMode
 import com.inspiredandroid.kai.data.Service
 import com.inspiredandroid.kai.data.modelSupportsImages
 import com.inspiredandroid.kai.network.dtos.openaicompatible.OpenAICompatibleChatRequestDto
@@ -13,6 +14,7 @@ internal fun buildOpenAIMessages(
     systemPrompt: String?,
     modelId: String,
     declaredToolNames: Set<String>? = null,
+    reasoningMode: ReasoningRequestMode = service.reasoningRequestMode,
 ): List<OpenAICompatibleChatRequestDto.Message> = buildList {
     // Images go through only when both the service and the specific model accept them.
     // Mixed services (e.g. Z.AI) host text-only and vision models side by side.
@@ -27,7 +29,7 @@ internal fun buildOpenAIMessages(
     }
     addAll(
         sanitizeToolMessages(
-            messages.map { it.toGroqMessageDto(service.reasoningRequestMode, supportsImages) },
+            messages.map { it.toGroqMessageDto(reasoningMode, supportsImages) },
             declaredToolNames,
         ),
     )
